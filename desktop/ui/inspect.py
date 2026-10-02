@@ -1,12 +1,21 @@
-"""Inspect page: capture a unit, run the local model, show and log the result."""
+"""Inspect page: live camera view with a side-by-side anomaly heatmap.
+
+The camera feeds frames continuously; a worker thread runs the model on the
+newest frame and the page shows the original view (with the product outline)
+next to the calibrated heatmap. A FAIL that persists for a couple of frames is
+logged automatically, so defective units are captured without any clicking.
+"""
 
 from __future__ import annotations
+
+import time
 
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -21,6 +30,7 @@ from PySide6.QtWidgets import (
 from db import database as db
 from desktop import theme
 from desktop.auth import AuthService, OrgContext
+from desktop.live_logic import AutoCaptureDecider
 from desktop.model_store import ModelStore, log_inspection, run_inspection
 from desktop.ui.camera_stream import CameraStream, show_camera_error
 from desktop.ui.errors import show_error
@@ -33,14 +43,22 @@ from desktop.ui.widgets import (
     make_table,
     muted,
     page_header,
+    rgb_to_pixmap,
 )
-from desktop.worker import FunctionWorker
+from desktop.worker import FunctionWorker, safe_stop
+from desktop.workers.live_inference_worker import LiveInferenceWorker
+from service.foreground import foreground_from_border
 
 ACTION_TEXT = {
     "PASS": "Release unit.",
     "REVIEW": "Inspect the highlighted area manually, then record a decision.",
     "FAIL": "Set aside and inspect the highlighted area.",
 }
+
+# A manually logged live result must be reasonably fresh.
+LATEST_RESULT_TTL_S = 3.0
+# How often to re-check the active profile mask for the outline overlay.
+OUTLINE_CHECK_INTERVAL_S = 1.0
 
 
 class InspectPage(QWidget):
@@ -53,9 +71,19 @@ class InspectPage(QWidget):
         self.sync_engine = sync_engine
         self.model_store = ModelStore()
         self.stream: CameraStream | None = None
-        self.pending_image: np.ndarray | None = None
+        self.live_worker: LiveInferenceWorker | None = None
+        self.latest_result: dict | None = None
+        self.latest_result_at = 0.0
         self.last_uid: str | None = None
         self.current_frame: np.ndarray | None = None
+        self.decider = AutoCaptureDecider(min_consecutive=2, cooldown_s=3.0)
+        self._live_error_shown = False
+        self._inspect_worker: FunctionWorker | None = None
+
+        # Cached product-outline overlay for the live preview.
+        self._outline_key: tuple | None = None
+        self._outline_contours: list = []
+        self._outline_checked_at = 0.0
 
         self._build_ui()
         self._refresh_model_status()
@@ -71,7 +99,8 @@ class InspectPage(QWidget):
 
         header = QHBoxLayout()
         header.addWidget(page_header(
-            "Inspect", "Capture a unit and inspect it on this machine"
+            "Inspect",
+            "Live inspection — the model runs on the newest camera frame",
         ), 1)
         self.model_status = caption("")
         header.addWidget(self.model_status, 0, Qt.AlignmentFlag.AlignBottom)
@@ -79,17 +108,17 @@ class InspectPage(QWidget):
 
         columns = QHBoxLayout()
         columns.setSpacing(theme.SPACE_M)
-        columns.addWidget(self._build_capture_card(), 3)
+        columns.addWidget(self._build_live_card(), 3)
         columns.addWidget(self._build_result_card(), 2)
         root.addLayout(columns, 1)
 
         root.addWidget(self._build_recent_card(), 1)
 
-    def _build_capture_card(self) -> QWidget:
-        frame, layout = card("Capture unit")
+    def _build_live_card(self) -> QWidget:
+        frame, layout = card("Live view")
 
         self.preview_label = QLabel(
-            "Start the camera or upload an image to begin"
+            "Start live inspection to see the camera feed"
         )
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(480, 340)
@@ -106,25 +135,33 @@ class InspectPage(QWidget):
         self.camera_combo.addItem("Camera 1", 1)
         controls.addWidget(self.camera_combo)
 
-        self.camera_button = QPushButton("Start camera")
+        self.camera_button = QPushButton("Start live inspection")
         self.camera_button.clicked.connect(self._toggle_camera)
         controls.addWidget(self.camera_button)
 
-        self.capture_button = QPushButton("Capture")
-        self.capture_button.setEnabled(False)
-        self.capture_button.clicked.connect(self._capture_frame)
-        controls.addWidget(self.capture_button)
+        self.auto_check = QCheckBox("Auto-capture FAIL")
+        self.auto_check.setChecked(True)
+        self.auto_check.setToolTip(
+            "Log a FAIL automatically when it persists for two frames."
+        )
+        controls.addWidget(self.auto_check)
 
-        upload = QPushButton("Upload image…")
+        self.log_button = QPushButton("Log current result")
+        self.log_button.setEnabled(False)
+        self.log_button.clicked.connect(self._log_current)
+        controls.addWidget(self.log_button)
+
+        upload = QPushButton("Inspect image…")
         upload.clicked.connect(self._upload_image)
         controls.addWidget(upload)
         layout.addLayout(controls)
 
-        self.inspect_button = QPushButton("Inspect")
-        self.inspect_button.setObjectName("Primary")
-        self.inspect_button.setEnabled(False)
-        self.inspect_button.clicked.connect(self._inspect)
-        layout.addWidget(self.inspect_button)
+        self.live_status = caption(
+            "Live inference always runs on the newest frame; slower hardware "
+            "just updates less often. Auto-capture has a short cooldown so one "
+            "unit is logged once."
+        )
+        layout.addWidget(self.live_status)
         return frame
 
     def _build_result_card(self) -> QWidget:
@@ -142,10 +179,14 @@ class InspectPage(QWidget):
         self.detail_label = caption("")
         layout.addWidget(self.detail_label)
 
-        self.overlay_label = QLabel("")
-        self.overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.overlay_label.setMinimumHeight(170)
-        layout.addWidget(self.overlay_label, 1)
+        self.heatmap_label = QLabel("Heatmap appears here during live inspection")
+        self.heatmap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.heatmap_label.setMinimumHeight(230)
+        self.heatmap_label.setStyleSheet(
+            f"background: {theme.SIDEBAR_BG}; color: {theme.SIDEBAR_TEXT}; "
+            f"border-radius: {theme.RADIUS_CONTROL}px;"
+        )
+        layout.addWidget(self.heatmap_label, 1)
 
         review_row = QHBoxLayout()
         review_row.setSpacing(theme.SPACE_S)
@@ -178,6 +219,10 @@ class InspectPage(QWidget):
         if self.stream is not None:
             self._stop_camera()
             return
+        if self.model_store.get() is None:
+            QMessageBox.warning(self, "No model",
+                                "Train a model on the Train page first.")
+            return
         index = self.camera_combo.currentData()
         self.stream = CameraStream("usb", str(index))
         self.stream.opened.connect(self._on_camera_opened)
@@ -190,36 +235,176 @@ class InspectPage(QWidget):
         self.stream.start()
 
     def _on_camera_opened(self) -> None:
+        model = self.model_store.get()
+        if model is None:
+            self._stop_camera()
+            return
         self.camera_button.setEnabled(True)
-        self.camera_button.setText("Stop camera")
-        self.capture_button.setEnabled(True)
+        self.camera_button.setText("Stop live inspection")
+        self.decider.reset()
+        self.live_worker = LiveInferenceWorker(
+            model, db.get_settings(), self.model_store.artifacts()
+        )
+        self.live_worker.result_ready.connect(self._on_live_result)
+        self.live_worker.failed.connect(self._on_live_failed)
+        self.live_worker.start()
 
     def _on_stream_error(self, kind: str, address: str) -> None:
         self._stop_camera()
         show_camera_error(self, kind, address)
 
     def _stop_camera(self) -> None:
+        if self.live_worker is not None:
+            self.live_worker.running = False
+            safe_stop(self.live_worker)
+            self.live_worker = None
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
         self.camera_button.setEnabled(True)
-        self.camera_button.setText("Start camera")
-        self.capture_button.setEnabled(False)
-
-    def _on_frame(self, frame) -> None:
-        self.current_frame = frame
-        self.preview_label.setPixmap(bgr_to_pixmap(frame, 640, 420))
+        self.camera_button.setText("Start live inspection")
+        self.log_button.setEnabled(False)
 
     def on_leave(self) -> None:
         """Stop live capture when the user navigates away."""
         self._stop_camera()
 
-    def _capture_frame(self) -> None:
-        if self.current_frame is None:
+    # ------------------------------------------------------------------ frames
+
+    def _on_frame(self, frame) -> None:
+        self.current_frame = frame
+        if self.live_worker is not None:
+            self.live_worker.submit(frame)
+        self.preview_label.setPixmap(
+            bgr_to_pixmap(self._with_outline(frame), 640, 420)
+        )
+
+    def _with_outline(self, frame: np.ndarray) -> np.ndarray:
+        """Draw the canonical product outline on a copy of the frame.
+
+        Re-checked once per second; only recomputed when the active profile or
+        the frame size changes, so the per-frame cost is one draw call.
+        """
+        now = time.monotonic()
+        if now - self._outline_checked_at > OUTLINE_CHECK_INTERVAL_S:
+            self._outline_checked_at = now
+            artifacts = self.model_store.artifacts()
+            mask = artifacts.mask if artifacts else None
+            key = (
+                id(mask), None if mask is None else mask.shape,
+                frame.shape[0], frame.shape[1],
+            )
+            if key != self._outline_key:
+                self._outline_key = key
+                self._outline_contours = self._contours_for(frame, mask)
+        if not self._outline_contours:
+            return frame
+        out = frame.copy()
+        cv2.drawContours(out, self._outline_contours, -1, (60, 200, 90), 2)
+        return out
+
+    @staticmethod
+    def _contours_for(frame: np.ndarray, mask: np.ndarray | None) -> list:
+        height, width = frame.shape[:2]
+        if mask is not None and mask.sum() > 0:
+            binary = cv2.resize(mask.astype(np.uint8), (width, height),
+                                interpolation=cv2.INTER_NEAREST)
+        else:
+            binary = foreground_from_border(frame).astype(np.uint8)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        min_area = 0.002 * height * width
+        kept = [c for c in contours if cv2.contourArea(c) >= min_area]
+        kept.sort(key=cv2.contourArea, reverse=True)
+        return kept[:4]
+
+    # ------------------------------------------------------------------- live
+
+    def _on_live_result(self, result: dict) -> None:
+        if result.get("no_product"):
+            # Empty scene: never auto-capture the background. Feed a non-FAIL
+            # verdict so the decider re-arms when the next unit arrives.
+            self.latest_result = None
+            self.log_button.setEnabled(False)
+            self.banner.set_result(
+                "NONE", "No product in view — waiting for a unit.", ""
+            )
+            self.score_bar.set_score(None)
+            self.explanation_label.setText("")
+            self.detail_label.setText("")
+            self.heatmap_label.setText("No product in view")
+            self.decider.update("REVIEW")
             return
-        self.pending_image = self.current_frame.copy()
-        self.preview_label.setPixmap(bgr_to_pixmap(self.pending_image, 640, 420))
-        self.inspect_button.setEnabled(True)
+        self.latest_result = result
+        self.latest_result_at = time.monotonic()
+        self._apply_result(result)
+        self.log_button.setEnabled(True)
+        if self.auto_check.isChecked() and self.decider.update(result["verdict"]):
+            self._log_result(result, reason="Auto-captured")
+
+    def _on_live_failed(self, trace: str) -> None:
+        self.status_bar.showMessage("Live inference error — frame skipped", 5000)
+        if not self._live_error_shown:
+            self._live_error_shown = True
+            show_error(
+                self, "Live inference failed",
+                "A frame could not be analysed. Live mode keeps running; "
+                "retrain the model if this repeats.",
+                trace,
+            )
+
+    def _apply_result(self, result: dict) -> None:
+        verdict = result["verdict"]
+        certainty = (
+            f"Decision certainty: {result['certainty']} — "
+            f"{result['certainty_reason']}"
+        )
+        self.banner.set_result(verdict, ACTION_TEXT.get(verdict, ""), certainty)
+        self.score_bar.set_score(result["score"], result["threshold"],
+                                 result["delta"])
+        self.explanation_label.setText(result["explanation"])
+        details = []
+        if result.get("region_label"):
+            details.append(f"Location {result['region_label']}")
+        details.append(f"Area {result['area_pct']:.1f}%")
+        details.append(f"Setup {result['setup_status']}")
+        details.append(f"{result['latency_ms']} ms")
+        self.detail_label.setText(" · ".join(details))
+        self.heatmap_label.setPixmap(
+            rgb_to_pixmap(result["overlay"], 460, 320)
+        )
+        self.review_widget.setVisible(verdict == "REVIEW")
+        if "frame" in result:
+            self.preview_label.setPixmap(
+                bgr_to_pixmap(self._with_outline(result["frame"]), 640, 420)
+            )
+
+    # ------------------------------------------------------------------ log
+
+    def _log_result(self, result: dict, reason: str) -> str | None:
+        model = self.model_store.get()
+        if model is None or "frame" not in result:
+            return None
+        uid = log_inspection(result, result["frame"], model.model_version)
+        self.last_uid = uid
+        self.status_bar.showMessage(f"{reason}: logged {uid}", 4000)
+        if self.sync_engine is not None:
+            self.sync_engine.kick()
+        self._refresh_recent()
+        return uid
+
+    def _log_current(self) -> None:
+        if self.latest_result is None:
+            return
+        age = time.monotonic() - self.latest_result_at
+        if age > LATEST_RESULT_TTL_S:
+            self.status_bar.showMessage(
+                "No fresh result to log — wait for the next live update.", 3000
+            )
+            return
+        self._log_result(self.latest_result, reason="Logged")
+
+    # ---------------------------------------------------------------- images
 
     def _upload_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -234,28 +419,9 @@ class InspectPage(QWidget):
             return
         # Stop the live feed so it cannot overwrite the uploaded image.
         self._stop_camera()
-        self.pending_image = image
-        self.preview_label.setPixmap(bgr_to_pixmap(image, 640, 420))
-        self.inspect_button.setEnabled(True)
-
-    # ---------------------------------------------------------------- inspect
-
-    def _refresh_model_status(self) -> None:
-        version = self.model_store.active_version()
-        profile = self.model_store.active_profile()
-        parts = []
-        if version:
-            parts.append(f"Model {version[:14]}…")
-        if profile:
-            parts.append(f"Profile “{profile['name']}”")
-        self.model_status.setText(
-            " · ".join(parts) if parts
-            else "No model trained yet — open Train first."
+        self.preview_label.setPixmap(
+            bgr_to_pixmap(self._with_outline(image), 640, 420)
         )
-
-    def _inspect(self) -> None:
-        if self.pending_image is None:
-            return
         model = self.model_store.get()
         if model is None:
             QMessageBox.warning(self, "No model",
@@ -263,18 +429,22 @@ class InspectPage(QWidget):
             return
         settings = db.get_settings()
         artifacts = self.model_store.artifacts()
-        self.inspect_button.setEnabled(False)
-        self.inspect_button.setText("Analysing…")
-        worker = FunctionWorker(run_inspection, self.pending_image, model,
-                                settings, artifacts)
-        worker.finished_ok.connect(lambda result: self._show_result(result, model))
+        self.status_bar.showMessage("Inspecting image…")
+        worker = FunctionWorker(run_inspection, image, model, settings, artifacts)
+        worker.finished_ok.connect(
+            lambda result: self._on_image_result(result, image)
+        )
         worker.failed.connect(self._inspect_failed)
         self._inspect_worker = worker
         worker.start()
 
+    def _on_image_result(self, result: dict, image: np.ndarray) -> None:
+        result = dict(result)
+        result["frame"] = image
+        self._apply_result(result)
+        self._log_result(result, reason="Logged image")
+
     def _inspect_failed(self, trace: str) -> None:
-        self.inspect_button.setEnabled(True)
-        self.inspect_button.setText("Inspect")
         show_error(
             self, "Inspection failed",
             "The inspection could not finish. Try again, or retrain the "
@@ -282,45 +452,7 @@ class InspectPage(QWidget):
             trace,
         )
 
-    def _show_result(self, result: dict, model) -> None:
-        self.inspect_button.setEnabled(True)
-        self.inspect_button.setText("Inspect")
-
-        if result.get("no_product"):
-            self.banner.set_result(
-                "NONE", "No product detected in the expected region. "
-                        "Adjust the unit or camera and capture again — "
-                        "nothing was logged."
-            )
-            self.score_bar.set_score(None)
-            self.explanation_label.setText("")
-            self.detail_label.setText("")
-            self.review_widget.setVisible(False)
-            self.status_bar.showMessage("No product — not logged", 4000)
-            return
-
-        verdict = result["verdict"]
-        certainty = f"Decision certainty: {result['certainty']} — {result['certainty_reason']}"
-        self.banner.set_result(verdict, ACTION_TEXT.get(verdict, ""), certainty)
-        self.score_bar.set_score(result["score"], result["threshold"],
-                                 result["delta"])
-        self.explanation_label.setText(result["explanation"])
-        details = []
-        if result.get("region_label"):
-            details.append(f"Location {result['region_label']}")
-        details.append(f"Area {result['area_pct']:.1f}%")
-        details.append(f"Setup {result['setup_status']}")
-        details.append(f"{result['latency_ms']} ms")
-        self.detail_label.setText(" · ".join(details))
-        self.overlay_label.setPixmap(rgb_to_pixmap_safe(result["overlay"]))
-        self.review_widget.setVisible(verdict == "REVIEW")
-
-        uid = log_inspection(result, self.pending_image, model.model_version)
-        self.last_uid = uid
-        self.status_bar.showMessage(f"Logged {uid}", 4000)
-        if self.sync_engine is not None:
-            self.sync_engine.kick()
-        self._refresh_recent()
+    # ----------------------------------------------------------------- review
 
     def _review(self, disposition: str) -> None:
         if not self.last_uid:
@@ -339,6 +471,19 @@ class InspectPage(QWidget):
 
     # ----------------------------------------------------------------- recent
 
+    def _refresh_model_status(self) -> None:
+        version = self.model_store.active_version()
+        profile = self.model_store.active_profile()
+        parts = []
+        if version:
+            parts.append(f"Model {version[:14]}…")
+        if profile:
+            parts.append(f"Profile “{profile['name']}”")
+        self.model_status.setText(
+            " · ".join(parts) if parts
+            else "No model trained yet — open Train first."
+        )
+
     def _refresh_recent(self) -> None:
         rows = db.get_inspections(limit=6)
         self.recent_table.setRowCount(len(rows))
@@ -356,9 +501,3 @@ class InspectPage(QWidget):
                     item.setForeground(QColor(theme.VERDICT_COLORS[text]))
                 self.recent_table.setItem(row_idx, col, item)
         self.recent_table.resizeColumnsToContents()
-
-
-def rgb_to_pixmap_safe(image: np.ndarray):
-    from desktop.ui.widgets import rgb_to_pixmap
-
-    return rgb_to_pixmap(image, 420, 230)

@@ -45,6 +45,24 @@ LOO_MAX_IMAGES = 30   # leave-one-out reference calibration up to this set size
 KFOLD = 5             # cross-validation folds for larger onboarding sets
 
 
+def auto_device() -> str:
+    """Best available device for interactive inference.
+
+    Honors ``VISIONQC_DEVICE`` (tests/CI pin ``cpu``); otherwise CUDA, then
+    Apple MPS, then CPU. The model default stays CPU for headless service use;
+    the desktop app opts in via this helper.
+    """
+    override = os.environ.get("VISIONQC_DEVICE")
+    if override:
+        return override
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 # ---------------------------------------------------------------------------
 # Image loading helpers
 # ---------------------------------------------------------------------------
@@ -226,7 +244,8 @@ class PatchCoreModel:
                 score_mask.astype(np.uint8), (W, H),
                 interpolation=cv2.INTER_NEAREST,
             ).astype(bool)
-            patch_map = patch_map * torch.from_numpy(resized.astype(np.float32))
+            mask_tensor = torch.from_numpy(resized.astype(np.float32))
+            patch_map = patch_map * mask_tensor.to(patch_map.device)
         return patch_map
 
     def _reference_scores(self, all_features: torch.Tensor,

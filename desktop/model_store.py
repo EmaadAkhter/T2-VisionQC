@@ -19,6 +19,7 @@ from service.foreground import (
 )
 from service.inference import (
     PatchCoreModel,
+    auto_device,
     compute_certainty,
     compute_setup_status,
     compute_verdict,
@@ -120,6 +121,8 @@ class ModelStore:
             return None
         model = PatchCoreModel()
         model.load(path)
+        # Interactive desktop use: use the Apple GPU / CUDA when available.
+        model.to(auto_device())
         self._model = model
         self._version = version
         return model
