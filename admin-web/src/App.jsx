@@ -100,7 +100,7 @@ function SignIn() {
       if (mode === 'forgot') {
         const { error: resetError } = await supabase.auth.resetPasswordForEmail(
           email,
-          { redirectTo: window.location.origin },
+          { redirectTo: `${window.location.origin}/admin/` },
         )
         if (resetError) throw resetError
         setNotice('If that email exists, a reset link is on its way.')

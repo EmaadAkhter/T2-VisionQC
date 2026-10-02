@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -44,6 +45,9 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+logger = logging.getLogger("visionqc.relay")
 
 DATA_DIR = Path(os.environ.get("VISIONQC_SERVER_DATA", "server-data"))
 MODELS_DIR = DATA_DIR / "models"
@@ -52,6 +56,15 @@ DB_PATH = DATA_DIR / "server.db"
 DASHBOARD_TOKEN = os.environ.get("VISIONQC_DASHBOARD_TOKEN", "dev-token")
 RELAY_FPS = float(os.environ.get("VISIONQC_RELAY_FPS", "5"))
 MAX_FRAME_BYTES = int(os.environ.get("VISIONQC_MAX_FRAME_BYTES", 2_000_000))
+
+# Public site served on the same hostname: / is the landing page, /admin the
+# built web console (admin-web/dist).
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SITE_DIR = Path(os.environ.get("VISIONQC_SITE_DIR", ROOT_DIR / "web"))
+ADMIN_DIST_DIR = Path(
+    os.environ.get("VISIONQC_ADMIN_DIST", ROOT_DIR / "admin-web" / "dist")
+)
+IMAGES_DIR = ROOT_DIR / "images"
 
 
 # ---------------------------------------------------------------------------
@@ -475,3 +488,30 @@ async def ws_dashboard(socket: WebSocket) -> None:
         pass
     finally:
         hub.disconnect_dashboard(socket)
+
+
+# ---------------------------------------------------------------------------
+# Public site (single hostname)
+# ---------------------------------------------------------------------------
+# Mounted after every API/WebSocket route, so the relay keeps priority and the
+# static mounts only catch what the API does not claim:
+#   /        -> web/            (landing page)
+#   /admin   -> admin-web/dist  (built React console)
+#   /images  -> images/         (screenshots used by the landing page)
+
+if IMAGES_DIR.is_dir():
+    app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+
+if ADMIN_DIST_DIR.is_dir():
+    app.mount("/admin", StaticFiles(directory=ADMIN_DIST_DIR, html=True),
+              name="admin")
+else:
+    logger.warning(
+        "admin console not built: %s (run 'cd admin-web && npm run build')",
+        ADMIN_DIST_DIR,
+    )
+
+if SITE_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=SITE_DIR, html=True), name="site")
+else:
+    logger.warning("landing page directory missing: %s", SITE_DIR)

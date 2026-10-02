@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VisionQC — Visual quality inspection that learns from good units</title>
+    <meta
+      name="description"
+      content="VisionQC learns 'normal' from 20–30 good photos and scores every new unit live on a laptop CPU — heatmap, confidence and PASS/REVIEW/FAIL. No defect dataset, no GPU, no integrator."
+    />
+    <meta property="og:title" content="VisionQC — proof-first visual inspection" />
+    <meta
+      property="og:description"
+      content="Normal-only anomaly detection for small manufacturers. 0.976 AUROC on MVTec AD, ~100 ms on CPU, fully offline."
+    />
+    <meta property="og:image" content="/images/desktop_inspect.png" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <svg class="svg-defs" aria-hidden="true">
+      <defs>
+        <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#4f8cff" />
+          <stop offset="1" stop-color="#22d3ee" />
+        </linearGradient>
+        <symbol id="vqc-mark" viewBox="0 0 32 32">
+          <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#mark)" />
+          <path
+            d="M11 13v-2h2M19 11h2v2M21 19v2h-2M13 21h-2v-2"
+            stroke="#06101f"
+            stroke-width="1.9"
+            stroke-linecap="round"
+            fill="none"
+          />
+          <circle cx="16" cy="16" r="3" fill="#06101f" />
+        </symbol>
+      </defs>
+    </svg>
+    <div class="page-glow" aria-hidden="true"></div>
+
+    <header class="nav">
+      <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <use href="#vqc-mark" />
+        </svg>
+        <span>VisionQC</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="#screens">Screenshots</a>
+        <a
+          href="https://github.com/EmaadAkhter/T2-VisionQC"
+          target="_blank"
+          rel="noreferrer"
+          >GitHub</a
+        >
+      </nav>
+      <a class="btn btn-primary nav-cta" href="/admin/">Open console</a>
+    </header>
+
+    <main>
+      <!-- Hero -->
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">TECHFORGE 2026 · Team T2 · AI/ML</p>
+          <h1>
+            Visual quality inspection that learns from
+            <em>good units</em>.
+          </h1>
+          <p class="lede">
+            No defect dataset, no GPU, no machine-vision integrator. Show
+            VisionQC 20–30 good parts once and it catches the units that
+            deviate — with a heatmap, a confidence score and a
+            PASS&nbsp;/&nbsp;REVIEW&nbsp;/&nbsp;FAIL decision.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="/admin/">Open Admin Console</a>
+            <a
+              class="btn btn-ghost"
+              href="https://github.com/EmaadAkhter/T2-VisionQC"
+              target="_blank"
+              rel="noreferrer"
+              >Read the source</a
+            >
+          </div>
+          <ul class="hero-tags">
+            <li>Fully offline</li>
+            <li>~100 ms on CPU</li>
+            <li>Phone camera as a sensor</li>
+          </ul>
+        </div>
+
+        <div class="hero-visual">
+          <figure class="window">
+            <div class="window-bar">
+              <span class="dot"></span><span class="dot"></span
+              ><span class="dot"></span>
+              <span class="window-title">VisionQC — Inspect</span>
+            </div>
+            <img
+              src="/images/desktop_inspect.png"
+              alt="VisionQC Inspect tab streaming a live phone camera feed with a FAIL verdict, heatmap and recent verdicts"
+            />
+          </figure>
+          <div class="float float-a">
+            <span class="pill pill-fail">FAIL</span>
+            <div>
+              <strong>Missing label</strong>
+              <span>caught by the component check</span>
+            </div>
+          </div>
+          <div class="float float-b">
+            <strong>0.33</strong>
+            <span>anomaly score · below threshold — still failed</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Stats -->
+      <section class="stats" aria-label="Headline results">
+        <div class="stat">
+          <strong>0.976</strong><span>mean AUROC · MVTec AD</span>
+        </div>
+        <div class="stat">
+          <strong>90.5%</strong><span>defect recall</span>
+        </div>
+        <div class="stat">
+          <strong>0.9%</strong><span>false rejects</span>
+        </div>
+        <div class="stat">
+          <strong>100 ms</strong><span>median CPU inference</span>
+        </div>
+      </section>
+
+      <!-- Features -->
+      <section id="features" class="section">
+        <div class="section-head">
+          <p class="eyebrow">What it does</p>
+          <h2>Everything a small line needs — nothing it doesn't</h2>
+          <p class="section-sub">
+            Built for factories that cannot afford a dedicated vision
+            integrator, a GPU, or months of labelling.
+          </p>
+        </div>
+        <div class="grid grid-3">
+          <article class="card">
+            <div class="icon" aria-hidden="true">◐</div>
+            <h3>Normal-only training</h3>
+            <p>
+              PatchCore builds a memory bank of normal appearance from 20–30
+              good photos. No defect examples, no labels, a working model in
+              seconds.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">◎</div>
+            <h3>Explainable verdicts</h3>
+            <p>
+              Every decision ships with a heatmap, 3×3 defect location, area,
+              intensity and a plain-language explanation — never just a score.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">⬡</div>
+            <h3>Learned component check</h3>
+            <p>
+              A second signal catches missing coloured components — like a
+              peeled label on a transparent bottle — even when the anomaly
+              score alone would pass.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">▤</div>
+            <h3>Phone camera as a sensor</h3>
+            <p>
+              Pair an Android phone once and stream live frames into the
+              Inspect tab or the multi-camera grid. Frames stay on the LAN.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">⌗</div>
+            <h3>Tunable, reviewable</h3>
+            <p>
+              The supervisor tunes the threshold with an impact preview;
+              borderline units go to REVIEW and the operator's disposition is
+              recorded next to the system verdict.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true">⛨</div>
+            <h3>Teams &amp; audit trail</h3>
+            <p>
+              Organizations, invitations and roles live in the admin console,
+              isolated with row-level security. Every inspection is logged with
+              its images and synced.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section id="how" class="section">
+        <div class="section-head">
+          <p class="eyebrow">From photos to a live station</p>
+          <h2>Five steps, about an afternoon</h2>
+        </div>
+        <ol class="steps">
+          <li>
+            <span class="step-num">01</span>
+            <h3>Onboard</h3>
+            <p>
+              Capture 20–30 good units, approve one product mask. A product
+              profile is created on the factory machine.
+            </p>
+          </li>
+          <li>
+            <span class="step-num">02</span>
+            <h3>Train</h3>
+            <p>
+              PatchCore builds a memory bank of normal appearance in seconds —
+              the component check is calibrated from the same photos.
+            </p>
+          </li>
+          <li>
+            <span class="step-num">03</span>
+            <h3>Inspect</h3>
+            <p>
+              Live frames from a webcam, an upload or a paired phone; every
+              patch is compared against the memory bank.
+            </p>
+          </li>
+          <li>
+            <span class="step-num">04</span>
+            <h3>Decide</h3>
+            <p>
+              Score + tunable threshold → PASS / REVIEW / FAIL with heatmap,
+              location and explanation.
+            </p>
+          </li>
+          <li>
+            <span class="step-num">05</span>
+            <h3>Log &amp; sync</h3>
+            <p>
+              Inspections are stored locally with evidence, then synced
+              idempotently to the cloud for the KPI dashboard.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <!-- Benchmarks -->
+      <section id="benchmarks" class="section">
+        <div class="section-head">
+          <p class="eyebrow">Proof, not promises</p>
+          <h2>Benchmarked on the standard industrial dataset</h2>
+          <p class="section-sub">
+            MVTec AD, 15 categories, official test splits. Full per-category
+            tables and methodology live in the repository.
+          </p>
+        </div>
+        <div class="bench">
+          <div class="bench-row">
+            <div class="bench-label">
+              <strong>Image-level AUROC</strong><span>target ≥ 0.95</span>
+            </div>
+            <div class="bar"><i style="--w: 97.6%"></i></div>
+            <div class="bench-value">0.976</div>
+          </div>
+          <div class="bench-row">
+            <div class="bench-label">
+              <strong>Defect recall</strong><span>FAIL or REVIEW</span>
+            </div>
+            <div class="bar"><i style="--w: 90.5%"></i></div>
+            <div class="bench-value">90.5%</div>
+          </div>
+          <div class="bench-row">
+            <div class="bench-label">
+              <strong>False rejects</strong><span>good units failed</span>
+            </div>
+            <div class="bar bar-good"><i style="--w: 9%"></i></div>
+            <div class="bench-value">0.9%</div>
+          </div>
+          <div class="bench-row">
+            <div class="bench-label">
+              <strong>Heatmap localisation</strong><span>per category</span>
+            </div>
+            <div class="bar"><i style="--w: 97%"></i></div>
+            <div class="bench-value">97–100%</div>
+          </div>
+        </div>
+        <p class="fineprint">
+          Also validated in the real world: a model trained on 25 good bottle
+          photos caught 12/12 defects with 0/18 false rejects, and the learned
+          component check passed 25/25 good images while failing 75/75
+          synthesized missing-label frames.
+        </p>
+      </section>
+
+      <!-- Screenshots -->
+      <section id="screens" class="section">
+        <div class="section-head">
+          <p class="eyebrow">The platform</p>
+          <h2>Desktop, phone and web — one workflow</h2>
+        </div>
+        <div class="shots">
+          <figure class="shot shot-wide">
+            <img
+              src="/images/heatmap_result.png"
+              alt="Anomaly heatmap showing where a unit deviates"
+              loading="lazy"
+            />
+            <figcaption>
+              <strong>Explainable results</strong> — the heatmap shows where
+              the unit deviates, with area, intensity and location.
+            </figcaption>
+          </figure>
+          <figure class="shot">
+            <img
+              src="/images/desktop_train.png"
+              alt="Train tab for uploading good-unit photos"
+              loading="lazy"
+            />
+            <figcaption>
+              <strong>Train</strong> — normal-only onboarding; model versions
+              are kept and switchable.
+            </figcaption>
+          </figure>
+          <figure class="shot">
+            <img
+              src="/images/desktop_kpi.png"
+              alt="KPI dashboard with today's rejection rate and inspection log"
+              loading="lazy"
+            />
+            <figcaption>
+              <strong>KPI</strong> — today's inspected/passed/failed counts,
+              rejection rate and pending reviews.
+            </figcaption>
+          </figure>
+          <figure class="shot">
+            <img
+              src="/images/desktop_cameras.png"
+              alt="Cameras tab with registered line cameras and phone pairing"
+              loading="lazy"
+            />
+            <figcaption>
+              <strong>Cameras</strong> — register line cameras and pair phones
+              for live streaming.
+            </figcaption>
+          </figure>
+          <figure class="shot shot-wide">
+            <img
+              src="/images/admin_web_invitations.png"
+              alt="Admin console with invitations and roles"
+              loading="lazy"
+            />
+            <figcaption>
+              <strong>Admin console</strong> — create the organization, invite
+              members and set roles; row-level security isolates each factory.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- Architecture -->
+      <section class="section">
+        <div class="section-head">
+          <p class="eyebrow">Architecture</p>
+          <h2>Inference stays in the factory</h2>
+          <p class="section-sub">
+            Small manufacturers should not need the internet to inspect a part.
+          </p>
+        </div>
+        <div class="arch">
+          <div class="arch-node">
+            <span class="arch-tag">Sensors</span>
+            <strong>Phones · webcams · RTSP</strong>
+            <p>Frames are captured on the line and stay on the LAN.</p>
+          </div>
+          <div class="arch-arrow" aria-hidden="true">→</div>
+          <div class="arch-node arch-node-main">
+            <span class="arch-tag">Factory machine</span>
+            <strong>PatchCore + component check</strong>
+            <p>
+              CPU inference, SQLite evidence store, phone pairing — offline
+              after setup.
+            </p>
+          </div>
+          <div class="arch-arrow" aria-hidden="true">→</div>
+          <div class="arch-node">
+            <span class="arch-tag">Control plane</span>
+            <strong>Relay + Supabase</strong>
+            <p>
+              Optional sync for KPIs, orgs and roles; the admin console and
+              phone relay share one hostname.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Final CTA -->
+      <section class="cta-final">
+        <h2>Put a working inspection station on your line</h2>
+        <p>
+          Start with the phone in your pocket and the photos you already have.
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="/admin/">Open Admin Console</a>
+          <a
+            class="btn btn-ghost"
+            href="https://github.com/EmaadAkhter/T2-VisionQC"
+            target="_blank"
+            rel="noreferrer"
+            >View on GitHub</a
+          >
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-brand">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <use href="#vqc-mark" />
+        </svg>
+        <div>
+          <strong>VisionQC</strong>
+          <span>Normal-only visual inspection for small manufacturers.</span>
+        </div>
+      </div>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="/admin/">Admin console</a>
+        <a
+          href="https://github.com/EmaadAkhter/T2-VisionQC"
+          target="_blank"
+          rel="noreferrer"
+          >GitHub</a
+        >
+        <a
+          href="https://github.com/EmaadAkhter/T2-VisionQC/blob/main/BENCHMARK.md"
+          target="_blank"
+          rel="noreferrer"
+          >Benchmark</a
+        >
+      </nav>
+      <p class="footer-note">
+        TECHFORGE 2026 · Team T2 · MIT-licensed code. MVTec AD is used for
+        non-commercial benchmarking.
+      </p>
+    </footer>
+  </body>
+</html>
