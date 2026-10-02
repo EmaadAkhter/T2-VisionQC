@@ -20,6 +20,7 @@ from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.edge_server import EdgeServer
 from desktop.sync import SyncEngine
+from desktop.worker import FunctionWorker, safe_stop
 from desktop import theme
 
 NAV_ITEMS = [
@@ -291,7 +292,16 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_online(self) -> None:
-        online = self.auth.is_online()
+        # Network check runs off the main thread: a slow/unreachable server
+        # must never freeze the UI.
+        worker = getattr(self, "_online_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        self._online_worker = FunctionWorker(self.auth.is_online)
+        self._online_worker.finished_ok.connect(self._on_online_result)
+        self._online_worker.start()
+
+    def _on_online_result(self, online: bool) -> None:
         self.online_label.setText("online" if online else "offline")
         self.online_dot.setStyleSheet(
             f"background: {theme.PASS if online else theme.REVIEW}; "
@@ -306,6 +316,9 @@ class MainWindow(QMainWindow):
         current = self.pages.get(self._current_key)
         if current is not None and hasattr(current, "on_leave"):
             current.on_leave()
+        online_worker = getattr(self, "_online_worker", None)
+        if online_worker is not None and online_worker.isRunning():
+            safe_stop(online_worker, timeout_ms=2000)
         if self.edge is not None:
             self.edge.stop()
         if self.sync_engine is not None:
