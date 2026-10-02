@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 import time
 from io import BytesIO
 
@@ -13,7 +14,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -26,7 +29,66 @@ from PySide6.QtWidgets import (
 )
 
 from desktop.auth import AuthError, AuthService, OrgContext
+from desktop.model_store import ModelStore, log_inspection, run_inspection
+from desktop.theme import VERDICT_COLORS
 from desktop.ui.widgets import bgr_to_pixmap, card, muted
+
+
+class LineCameraWorker(QThread):
+    """Sample one camera on an interval, inspect locally, log every result.
+
+    Capture and inference run sequentially inside this worker; the shared
+    inference lock keeps multiple camera workers from overloading the CPU.
+    """
+
+    result_ready = Signal(str, object, object, str)
+    error = Signal(str, str)
+
+    def __init__(self, camera: dict, model_store: ModelStore, interval_s: float,
+                 inference_lock):
+        super().__init__()
+        self.camera = camera
+        self.model_store = model_store
+        self.interval_s = interval_s
+        self.inference_lock = inference_lock
+        self.running = True
+
+    def run(self) -> None:  # noqa: D102
+        source: int | str = (
+            int(self.camera["address"])
+            if self.camera["kind"] == "usb" and self.camera["address"].isdigit()
+            else self.camera["address"]
+        )
+        capture = cv2.VideoCapture(source)
+        if not capture.isOpened():
+            self.error.emit(self.camera["id"], "could not open the stream")
+            return
+        while self.running:
+            ok, frame = capture.read()
+            if not ok:
+                self.msleep(500)
+                continue
+            model = self.model_store.get()
+            if model is None:
+                self.error.emit(self.camera["id"], "no active model")
+                self.msleep(2000)
+                continue
+            try:
+                from db import database as db
+
+                settings = db.get_settings()
+                with self.inference_lock:
+                    result = run_inspection(frame, model, settings)
+                    uid = log_inspection(result, frame, model.model_version)
+                self.result_ready.emit(self.camera["id"], frame, result, uid)
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(self.camera["id"], str(exc))
+            self.msleep(int(self.interval_s * 1000))
+        capture.release()
+
+    def stop(self) -> None:
+        self.running = False
+        self.wait(3000)
 
 
 def _qr_pixmap(payload: str, size: int) -> QPixmap:
@@ -150,6 +212,9 @@ class CamerasPage(QWidget):
         self.edge = edge
         self.stream: CameraStream | None = None
         self.cameras: list[dict] = []
+        self.line_workers: dict[str, LineCameraWorker] = {}
+        self.line_tiles: dict[str, dict] = {}
+        self.inference_lock = threading.Lock()
 
         self._build_ui()
         self._load()
@@ -219,8 +284,132 @@ class CamerasPage(QWidget):
 
         root.addLayout(columns, 1)
 
+        root.addWidget(self._build_line_card())
+
         if self.edge is not None:
             root.addWidget(self._build_pairing_card())
+
+    def _build_line_card(self) -> QWidget:
+        frame, layout = card("Live line monitoring")
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Inspect every"))
+        self.interval_spin = QDoubleSpinBox()
+        self.interval_spin.setRange(0.5, 30.0)
+        self.interval_spin.setSingleStep(0.5)
+        self.interval_spin.setValue(2.0)
+        self.interval_spin.setSuffix(" s")
+        controls.addWidget(self.interval_spin)
+        controls.addWidget(QLabel("per camera"))
+
+        self.line_start = QPushButton("Start line")
+        self.line_start.setObjectName("Primary")
+        self.line_start.clicked.connect(self._start_line)
+        controls.addWidget(self.line_start)
+
+        self.line_stop = QPushButton("Stop line")
+        self.line_stop.setEnabled(False)
+        self.line_stop.clicked.connect(self._stop_line)
+        controls.addWidget(self.line_stop)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.line_grid = QGridLayout()
+        layout.addLayout(self.line_grid)
+        self.line_status = muted(
+            "Register cameras above, then start the line. Every sampled frame "
+            "is inspected locally and logged."
+        )
+        layout.addWidget(self.line_status)
+        return frame
+
+    def _rebuild_line_tiles(self) -> None:
+        while self.line_grid.count():
+            item = self.line_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.line_tiles = {}
+        for index, camera in enumerate(self.cameras[:4]):
+            tile = QWidget()
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(0, 0, 0, 0)
+            thumb = QLabel("—")
+            thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumb.setMinimumSize(240, 150)
+            thumb.setStyleSheet(
+                "background:#0f172a; color:#94a3b8; border-radius:8px;"
+            )
+            name = QLabel(camera["name"])
+            name.setStyleSheet("font-weight:600;")
+            verdict = QLabel("idle")
+            score = QLabel("")
+            tile_layout.addWidget(name)
+            tile_layout.addWidget(thumb, 1)
+            tile_layout.addWidget(verdict)
+            tile_layout.addWidget(score)
+            self.line_grid.addWidget(tile, index // 2, index % 2)
+            self.line_tiles[camera["id"]] = {
+                "thumb": thumb, "verdict": verdict, "score": score,
+            }
+
+    def _start_line(self) -> None:
+        model_store = ModelStore()
+        if model_store.get() is None:
+            QMessageBox.warning(self, "No model",
+                                "Train a model before starting the line.")
+            return
+        if not self.cameras:
+            QMessageBox.information(self, "No cameras",
+                                    "Register at least one camera first.")
+            return
+        self._stop_line()
+        self._rebuild_line_tiles()
+        interval = self.interval_spin.value()
+        started = 0
+        for camera in self.cameras[:4]:
+            if camera["kind"] == "mobile":
+                continue
+            worker = LineCameraWorker(
+                camera, model_store, interval, self.inference_lock
+            )
+            worker.result_ready.connect(self._on_line_result)
+            worker.error.connect(self._on_line_error)
+            worker.start()
+            self.line_workers[camera["id"]] = worker
+            started += 1
+        self.line_start.setEnabled(False)
+        self.line_stop.setEnabled(True)
+        self.line_status.setText(
+            f"Monitoring {started} camera(s) every {interval:.1f}s — "
+            "results are logged automatically."
+        )
+
+    def _stop_line(self) -> None:
+        for worker in self.line_workers.values():
+            worker.stop()
+        self.line_workers = {}
+        self.line_start.setEnabled(True)
+        self.line_stop.setEnabled(False)
+        self.line_status.setText("Line monitoring stopped.")
+
+    def _on_line_result(self, camera_id: str, frame, result: dict, uid: str) -> None:
+        tile = self.line_tiles.get(camera_id)
+        if tile is None:
+            return
+        tile["thumb"].setPixmap(bgr_to_pixmap(frame, 260, 160))
+        color = VERDICT_COLORS.get(result["verdict"], "#0f172a")
+        tile["verdict"].setText(f"{result['verdict']} · {uid[-4:]}")
+        tile["verdict"].setStyleSheet(f"color: {color}; font-weight: 700;")
+        tile["score"].setText(
+            f"score {result['score']:.2f} · {result['latency_ms']} ms"
+        )
+        self.status_bar.showMessage(f"{uid} logged from line camera", 2000)
+
+    def _on_line_error(self, camera_id: str, message: str) -> None:
+        tile = self.line_tiles.get(camera_id)
+        if tile is not None:
+            tile["verdict"].setText(f"error: {message[:60]}")
+            tile["verdict"].setStyleSheet("color: #dc2626;")
+        self.line_status.setText(f"Camera error: {message[:120]}")
 
     def _build_pairing_card(self) -> QWidget:
         frame, layout = card("Mobile pairing")
@@ -296,6 +485,9 @@ class CamerasPage(QWidget):
                                 f"Could not load cameras: {exc}")
             self.cameras = []
         self._render_table()
+        if self.line_workers:
+            self._stop_line()
+        self._rebuild_line_tiles()
 
     def _lookups(self) -> tuple[list[dict], list[dict]]:
         try:
@@ -427,4 +619,5 @@ class CamerasPage(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._stop_preview()
+        self._stop_line()
         super().closeEvent(event)
