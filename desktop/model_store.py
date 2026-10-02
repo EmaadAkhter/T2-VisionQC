@@ -17,6 +17,7 @@ from service.foreground import (
     foreground_from_border,
     missing_region_fraction,
 )
+from service.components import evaluate_component_check
 from service.inference import (
     PatchCoreModel,
     auto_device,
@@ -190,6 +191,45 @@ def run_inspection(image: np.ndarray, model: PatchCoreModel,
         score, verdict, threshold, delta, setup_status, explanation["area_pct"]
     )
 
+    # Learned component check (missing label and similar). Independent of
+    # the anomaly score: the background seen through a transparent part is
+    # "normal" to the memory bank, so absence of the expected component
+    # needs its own signal.
+    component_fractions = None
+    check = getattr(model, "component_check", None)
+    if check and settings.get("component_check", True):
+        evaluation = evaluate_component_check(image, check)
+        component_fractions = evaluation["fractions"]
+        if evaluation["severity"] == "FAIL":
+            verdict = "FAIL"
+            certainty = "High"
+            certainty_reason = (
+                "Learned component check: expected colored component "
+                "is missing."
+            )
+            explanation = {
+                "explanation": (
+                    "Expected product component is missing or not visible "
+                    "(learned from your good units)."
+                ),
+                "region_label": "component",
+                "area_pct": 0.0,
+                "n_regions": 1,
+            }
+        elif evaluation["severity"] == "REVIEW" and verdict == "PASS":
+            verdict = "REVIEW"
+            certainty = "Low"
+            certainty_reason = (
+                "Expected colored component only partially visible."
+            )
+            explanation = {
+                **explanation,
+                "explanation": (
+                    "Only part of the expected colored component is "
+                    "visible — possible tilt, glare or obstruction."
+                ),
+            }
+
     no_product = False
     missing_fraction = 0.0
     if artifacts is not None:
@@ -262,6 +302,7 @@ def run_inspection(image: np.ndarray, model: PatchCoreModel,
         "latency_ms": int((time.time() - start) * 1000),
         "no_product": no_product,
         "missing_fraction": missing_fraction,
+        "component_fractions": component_fractions,
         "profile_id": artifacts.profile["id"] if artifacts else None,
     }
 

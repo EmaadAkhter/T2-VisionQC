@@ -28,6 +28,7 @@ from desktop import theme
 from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
 from desktop.ui.errors import show_error
 from desktop.worker import FunctionWorker
+from service.components import calibrate_component_check
 from service.inference import MIN_TRAIN_IMAGES, PatchCoreModel, TARGET_TRAIN_IMAGES
 from service.backbones import engine_display_name, resolve_default_engine
 
@@ -37,6 +38,18 @@ def train_model(image_paths: list[str], name: str | None = None) -> dict:
     backbone, kwargs = resolve_default_engine(len(image_paths))
     model = PatchCoreModel(backbone=backbone, backbone_kwargs=kwargs)
     stats = model.fit(image_paths)
+
+    # Learned component check (missing label and similar), calibrated from
+    # the same good images. Self-disabling: None when the product shows no
+    # component the check could verify reliably.
+    try:
+        model.component_check = calibrate_component_check(image_paths)
+    except Exception:  # noqa: BLE001 - the check must never break training
+        model.component_check = None
+    stats["component_check"] = (
+        {"n_clusters": len(model.component_check["clusters"])}
+        if model.component_check else None
+    )
 
     models_dir = paths.models_dir()
     model_path = str(models_dir / f"{model.model_version}.pt")

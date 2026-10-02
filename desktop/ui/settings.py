@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -121,6 +122,18 @@ class SettingsPage(QWidget):
         cloud_layout.addStretch(1)
         columns.addWidget(cloud_card, 1)
 
+        component_card, component_layout = card("Component checks")
+        self.component_check_toggle = QCheckBox(
+            "Learned presence checks (label and similar)")
+        self.component_check_toggle.toggled.connect(self._save_component_check)
+        component_layout.addWidget(self.component_check_toggle)
+        component_layout.addWidget(muted(
+            "Fails units whose expected colored component — learned from "
+            "your good photos during training — is missing or barely "
+            "visible (e.g. a peeled-off label). Turn off only if this "
+            "product has no such component."))
+        columns.addWidget(component_card, 1)
+
         root.addLayout(columns)
         root.addStretch(1)
 
@@ -128,6 +141,8 @@ class SettingsPage(QWidget):
         settings = db.get_settings()
         self.threshold_input.setValue(settings.get("threshold", 0.46))
         self.delta_input.setValue(settings.get("delta", 0.05))
+        self.component_check_toggle.setChecked(
+            bool(settings.get("component_check", 1)))
         self._preview()
 
         inspections = db.get_inspections(limit=100000)
@@ -148,6 +163,10 @@ class SettingsPage(QWidget):
             index = self.evidence_combo.findData(policy)
             if index >= 0:
                 self.evidence_combo.setCurrentIndex(index)
+
+    def _save_component_check(self, checked: bool) -> None:
+        db.update_settings("default", "component_check", int(checked))
+        self.status_bar.showMessage("Component check setting saved", 4000)
 
     def _save_evidence(self) -> None:
         if self.sync_engine is None:

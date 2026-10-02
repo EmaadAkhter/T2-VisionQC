@@ -89,6 +89,7 @@ def init_db():
             )
         """)
         _add_column(conn, "models", "name", "TEXT")
+        _add_column(conn, "settings", "component_check", "INTEGER DEFAULT 1")
 
         # Per-camera model assignment (local station scope). camera_key is
         # either a cloud camera id or "usb:<index>" for the built-in camera.
@@ -683,6 +684,7 @@ def get_settings(product_id: str = "default") -> Dict[str, Any]:
             "delta": 0.05,
             "active_model_version": None,
             "pin_hash": None,
+            "component_check": 1,
         }
 
 

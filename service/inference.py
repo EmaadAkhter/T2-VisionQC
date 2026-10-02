@@ -120,6 +120,7 @@ class PatchCoreModel:
         self.input_size = self.backbone.input_size
         self.memory_bank = None          # (M, C) tensor
         self.ref_score = None            # float
+        self.component_check = None      # learned component-presence spec
         self.model_version = None
         self.training_stats = {}
         self.n_training_images = 0
@@ -438,6 +439,7 @@ class PatchCoreModel:
             "parent_version": self.parent_version,
             "coreset_ratio": self.coreset_ratio,
             "backbone": self.backbone.config(),
+            "component_check": self.component_check,
         }, path)
 
     def load(self, path: str):
@@ -450,6 +452,7 @@ class PatchCoreModel:
         self.created_at = checkpoint["created_at"]
         self.parent_version = checkpoint.get("parent_version")
         self.coreset_ratio = checkpoint.get("coreset_ratio", COSET_RATIO)
+        self.component_check = checkpoint.get("component_check")
         self._use_backbone_config(checkpoint.get("backbone"))
         self.to(self.device)
         self.eval()
