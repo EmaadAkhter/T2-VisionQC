@@ -35,6 +35,7 @@ from service.foreground import (  # noqa: E402
     presence_regions,
     proposal_from_frames,
 )
+from service.backbones import engine_display_name, resolve_default_engine  # noqa: E402
 from service.inference import PatchCoreModel  # noqa: E402
 
 POC = ROOT / "data" / "poc"
@@ -60,8 +61,9 @@ def main() -> int:
     print(f"good frames: {len(good)} | mask area: {proposal.mean():.1%} | "
           f"presence regions: {regions.mean():.2%}")
 
-    # 2. Train with masked reference scoring.
-    model = PatchCoreModel()
+    # 2. Train with masked reference scoring (current default engine).
+    backbone, kwargs = resolve_default_engine(len(good))
+    model = PatchCoreModel(backbone=backbone, backbone_kwargs=kwargs)
     stats = model.fit([str(p) for p in good], score_mask=proposal)
     model_path = Path(TMP_DATA) / "models" / f"{stats['model_version']}.pt"
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +73,7 @@ def main() -> int:
         product_id="default",
         created_at=model.created_at,
         n_images=stats["n_training_images"],
-        backbone="WideResNet-50",
+        backbone=engine_display_name(model.backbone.config()["name"]),
         coreset_ratio=model.coreset_ratio,
         ref_score=stats["ref_score"],
         baseline_brightness=model.training_stats.get("mean_brightness", 0),
@@ -99,7 +101,7 @@ def main() -> int:
         "canonical_mask_path": str(mask_path),
         "presence_regions_path": str(regions_path),
         "coverage_floor": 0.6,
-        "threshold": 0.55,
+        "threshold": 0.50,
         "delta": 0.05,
         "model_version": stats["model_version"],
         "ref_score": stats["ref_score"],

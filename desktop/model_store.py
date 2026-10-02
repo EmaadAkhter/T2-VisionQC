@@ -39,7 +39,7 @@ class ProfileArtifacts:
             profile.get("background_model_path")
         )
         self.coverage_floor = float(profile.get("coverage_floor") or 0.9)
-        self.threshold = float(profile.get("threshold") or 0.55)
+        self.threshold = float(profile.get("threshold") or 0.50)
         self.delta = float(profile.get("delta") or 0.05)
 
     @staticmethod

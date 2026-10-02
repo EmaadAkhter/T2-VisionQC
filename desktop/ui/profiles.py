@@ -100,13 +100,14 @@ def build_profile_job(name: str, camera_id: str | None, good_paths: list[str],
                       mask: np.ndarray, background: BackgroundModel | None,
                       regions: np.ndarray | None,
                       proposal: np.ndarray | None,
-                      threshold: float = 0.55,
+                      threshold: float = 0.50,
                       delta: float = 0.05) -> dict:
     """Train the model, save artifacts and activate the profile.
 
-    Default threshold 0.55: the worst held-out good image sits at 0.50 by
-    construction of the normalisation, so a small onboarding set keeps PASS
-    below 0.50 and sends 0.50–0.60 to REVIEW. Editable per profile.
+    Default threshold 0.50: the worst held-out good image sits at 0.50 by
+    construction of the normalisation. The review band (0.45–0.55) keeps a
+    margin below that line, so near-limit units on small onboarding sets are
+    reviewed instead of passed. Editable per profile.
     """
     profile_id = uuid.uuid4().hex
     art_dir = paths.data_dir() / "profiles" / profile_id

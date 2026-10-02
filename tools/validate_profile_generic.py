@@ -86,7 +86,7 @@ def main() -> int:
         "id": category, "product_id": "default", "name": category,
         "canonical_mask_path": str(mask_path),
         "presence_regions_path": str(regions_path),
-        "coverage_floor": 0.6, "threshold": 0.55, "delta": 0.05,
+        "coverage_floor": 0.6, "threshold": 0.50, "delta": 0.05,
         "model_version": stats["model_version"], "ref_score": stats["ref_score"],
         "status": "active", "metrics": {"mask_area_fraction": float(proposal.mean())},
     })
