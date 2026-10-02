@@ -9,7 +9,6 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QTableWidgetItem,
     QVBoxLayout,
@@ -27,6 +26,7 @@ from desktop.ui.widgets import (
     muted,
     page_header,
 )
+from desktop.ui.errors import show_error
 from desktop.worker import FunctionWorker
 
 
@@ -215,8 +215,9 @@ class KpiPage(QWidget):
     def _sync_failed(self, trace: str) -> None:
         self.sync_button.setEnabled(True)
         self.sync_status.setText("Sync failed — will retry later.")
-        QMessageBox.warning(
+        show_error(
             self, "Sync failed",
             "Cloud unreachable. Inspections are safe locally and can be "
-            "synced later.\n\n" + trace[-400:],
+            "synced later.",
+            trace,
         )

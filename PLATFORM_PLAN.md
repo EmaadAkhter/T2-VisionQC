@@ -49,7 +49,7 @@ The current code assumes the repo layout (`ROOT/data`, `desktop/config.local.jso
   - `--smoke`: set `QT_QPA_PLATFORM=offscreen`, construct `QApplication` + `MainWindow` with a fake session, exit 0.
   - `--version`: print version and exit.
   - `--data-dir`: override data directory.
-- [ ] A1.7 Version constant in `desktop/__init__.py` (`__version__ = "0.3.0"`), shown in the window title and `--version`.
+- [ ] A1.7 Version constant in `desktop/__init__.py` (`__version__ = "0.3.1"`), shown in the window title and `--version`.
 - **Done when:** `python -m desktop.launcher --smoke` passes on macOS with the repo `data/` removed and a temp `VISIONQC_DATA_DIR`.
 
 ## A2. PyInstaller spec
@@ -297,7 +297,7 @@ Acceptance:
 | Milestone | Content | Exit |
 |---|---|---|
 | M1 | A0–A3 (paths, launcher, spec, workflow) | CI produces macOS + Windows artifacts; smoke green |
-| M2 | A4–A5 (release job, docs, badge) | Tag `v0.3.0` publishes signed-off (ad-hoc) artifacts |
+| M2 | A4–A5 (release job, docs, badge) | Tag `v0.3.1` publishes signed-off (ad-hoc) artifacts |
 | M3 | B1–B3 (schema, engine, station) | 36 h offline simulation passes locally |
 | M4 | B4–B8 (evidence, settings, UI, tests, CI job) | Backend CI green; sync acceptance met |
 | M5 | C1–C2 (profiles + wizard) | New product onboarded with approved mask |

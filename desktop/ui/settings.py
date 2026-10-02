@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from db import database as db
+import paths
 from desktop import theme
 from desktop.auth import AuthService, OrgContext
 from desktop.ui.widgets import card, muted, page_header
@@ -134,7 +135,7 @@ class SettingsPage(QWidget):
             f"{len(inspections)} inspections · "
             f"{db.count_unsynced_inspections()} waiting to sync · "
             f"{len(db.get_all_models())} model versions\n"
-            f"Database: data/visionqc.db · images: data/images/"
+            f"Database: {paths.db_path()}\nImages: {paths.images_dir()}"
         )
         self.cloud_label.setText(
             f"Organization: {self.org.org_name} ({self.org.role})\n"

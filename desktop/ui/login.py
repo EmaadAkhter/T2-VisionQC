@@ -65,6 +65,12 @@ class LoginWindow(QDialog):
         self.sign_in_button.clicked.connect(self._sign_in)
         layout.addWidget(self.sign_in_button)
 
+        self.password_input.returnPressed.connect(self._sign_in)
+        if auth.user_email:
+            self.password_input.setFocus()
+        else:
+            self.email_input.setFocus()
+
         hint = QLabel(
             "No account? Ask your admin to invite you from the VisionQC web "
             "console. Forgot your password? Reset it from the web console too."
@@ -82,6 +88,7 @@ class LoginWindow(QDialog):
 
         self.error_label.setText("")
         self.sign_in_button.setEnabled(False)
+        self.sign_in_button.setText("Signing in…")
         try:
             self.auth.sign_in(email, password)
             self.auth.claim_invitations()
@@ -89,8 +96,10 @@ class LoginWindow(QDialog):
         except AuthError as exc:
             self.error_label.setText(str(exc))
             self.sign_in_button.setEnabled(True)
+            self.sign_in_button.setText("Sign in")
             return
         self.sign_in_button.setEnabled(True)
+        self.sign_in_button.setText("Sign in")
         self.accept()
 
 

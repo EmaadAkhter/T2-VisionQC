@@ -37,6 +37,7 @@ from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.ui.mask_editor import MaskEditorDialog
 from desktop import theme
+from desktop.ui.errors import show_error
 from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
 from desktop.worker import FunctionWorker
 from service.foreground import (
@@ -294,6 +295,7 @@ class ProfileWizard(QDialog):
                                     "Choose a folder with 20–30 good-unit photos.")
             return
         self.propose_button.setEnabled(False)
+        self.propose_button.setText("Proposing…")
         self.status.setText("Building background model and proposing mask…")
         self.worker = FunctionWorker(
             propose_mask_job, self.bg_input.text().strip(),
@@ -305,6 +307,7 @@ class ProfileWizard(QDialog):
 
     def _proposed(self, result: dict) -> None:
         self.propose_button.setEnabled(True)
+        self.propose_button.setText("Propose mask")
         self.background = result["background"]
         self.proposal = result["proposal"]
         self.regions = result["regions"]
@@ -358,6 +361,7 @@ class ProfileWizard(QDialog):
         if self.approved is None or not self.good_paths:
             return
         self.build_button.setEnabled(False)
+        self.build_button.setText("Building…")
         self.status.setText("Training model on the approved region…")
         self.worker = FunctionWorker(
             build_profile_job, name, self.camera_combo.currentData(),
@@ -383,9 +387,16 @@ class ProfileWizard(QDialog):
 
     def _failed(self, trace: str) -> None:
         self.propose_button.setEnabled(True)
+        self.propose_button.setText("Propose mask")
         self.build_button.setEnabled(True)
+        self.build_button.setText("Build profile")
         self.status.setText("Failed — see the message.")
-        QMessageBox.critical(self, "Profile step failed", trace[-700:])
+        show_error(
+            self, "Profile step failed",
+            "The profile step could not finish. Check the selected folders "
+            "and try again.",
+            trace,
+        )
 
 
 class ProfilesPage(QWidget):
@@ -496,10 +507,19 @@ class ProfilesPage(QWidget):
             return
         dialog = MaskEditorDialog(sample, mask > 127, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            approved = dialog.approved_mask()
             cv2.imwrite(profile["canonical_mask_path"],
-                        dialog.approved_mask().astype(np.uint8) * 255)
-            self.status_bar.showMessage("Mask updated — retrain to apply",
-                                        5000)
+                        approved.astype(np.uint8) * 255)
+            try:
+                metrics = json.loads(profile.get("metrics_json") or "{}")
+            except json.JSONDecodeError:
+                metrics = {}
+            metrics["mask_area_fraction"] = float(approved.mean())
+            db.save_profile({**profile, "metrics": metrics})
+            self._refresh()
+            self.status_bar.showMessage(
+                "Mask updated — applies to the next inspection", 5000
+            )
 
     def _activate(self) -> None:
         profile = self._selected()

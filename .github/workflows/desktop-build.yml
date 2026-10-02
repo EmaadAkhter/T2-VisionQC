@@ -77,6 +77,15 @@ jobs:
       - name: Build (PyInstaller onedir)
         run: pyinstaller --clean --noconfirm packaging/visionqc.spec
 
+      - name: Verify macOS privacy usage strings
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          PLIST="dist/VisionQC.app/Contents/Info.plist"
+          plutil -p "$PLIST" | grep -q NSCameraUsageDescription
+          plutil -p "$PLIST" | grep -q NSMicrophoneUsageDescription
+          echo "privacy usage strings present"
+
       - name: Smoke test (offscreen, exit code)
         shell: bash
         timeout-minutes: 10

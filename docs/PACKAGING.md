@@ -13,6 +13,7 @@ How the VisionQC desktop app is built and shipped. See `PLATFORM_PLAN.md`
 | OpenCV | `opencv-python-headless` in the desktop build | No GUI deps; smaller |
 | Weights | `wide_resnet50_2-9ba9bcbe.pth` bundled | Offline first run at the factory; no download at runtime |
 | macOS signing | Ad-hoc (`codesign -s -`) for now | No paid Apple certificate yet; documented bypass |
+| macOS privacy | `NSCameraUsageDescription` + `NSMicrophoneUsageDescription` in the spec's `info_plist` | Without them macOS kills the process (TCC) on first camera access; CI verifies the keys |
 | Windows signing | Unsigned for now | Documented SmartScreen bypass; real signing later |
 | CI | GitHub Actions matrix `macos-14` + `windows-latest` | Free for public repos |
 | Artifacts | Zips (14-day retention) + Release assets on `v*` tags | Manual builds + versioned releases |
@@ -93,7 +94,12 @@ and the DMG with a drag-to-Applications layout.
 3. First launch is blocked by Gatekeeper (unsigned build): right-click the app
    → **Open**, or run
    `xattr -dr com.apple.quarantine /Applications/VisionQC.app`.
-4. The app asks for the server URL and anon key only on the very first run.
+4. The first time you open a camera (Inspect page or Cameras preview), macOS
+   asks for camera access. **Allow it.** If it was denied earlier, enable
+   VisionQC under **System Settings → Privacy & Security → Camera**, or reset
+   the prompt from a terminal:
+   `tccutil reset Camera com.visionqc.desktop`
+5. The app asks for the server URL and anon key only on the very first run.
    After one successful sign-in it opens straight into the last organization
    on every later launch — online or offline.
 

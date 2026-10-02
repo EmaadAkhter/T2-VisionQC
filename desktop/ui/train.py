@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
+import cv2
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -23,7 +24,8 @@ from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.theme import MUTED
 from desktop import theme
-from desktop.ui.widgets import card, make_table, muted, page_header
+from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
+from desktop.ui.errors import show_error
 from desktop.worker import FunctionWorker
 from service.inference import MIN_TRAIN_IMAGES, PatchCoreModel, TARGET_TRAIN_IMAGES
 
@@ -167,16 +169,13 @@ class TrainPage(QWidget):
         self._render_thumbs()
 
     def _render_thumbs(self) -> None:
-        from desktop.ui.widgets import bgr_to_pixmap
-        import cv2
-
         self.thumb_label.clear()
         self.thumb_label.setPixmap(
-            self._make_contact_sheet(self.selected_paths, cv2, bgr_to_pixmap)
+            self._make_contact_sheet(self.selected_paths)
         )
 
     @staticmethod
-    def _make_contact_sheet(paths, cv2, bgr_to_pixmap):
+    def _make_contact_sheet(paths):
         from PySide6.QtGui import QPixmap, QPainter, QColor
 
         thumbs = []
@@ -211,6 +210,7 @@ class TrainPage(QWidget):
         if len(self.selected_paths) < MIN_TRAIN_IMAGES:
             return
         self.train_button.setEnabled(False)
+        self.train_button.setText("Training…")
         self.progress_label.setText(
             f"Training on {len(self.selected_paths)} images… "
             "(a few seconds to a minute on CPU)"
@@ -222,6 +222,7 @@ class TrainPage(QWidget):
 
     def _train_done(self, stats: dict) -> None:
         self.train_button.setEnabled(True)
+        self.train_button.setText("Train model")
         self.progress_label.setText(
             f"Trained {stats['model_version']} on {stats['n_training_images']} "
             f"images · bank {stats['memory_bank_size']} · ref {stats['ref_score']:.2f}"
@@ -234,8 +235,14 @@ class TrainPage(QWidget):
 
     def _train_failed(self, trace: str) -> None:
         self.train_button.setEnabled(True)
+        self.train_button.setText("Train model")
         self.progress_label.setText("Training failed.")
-        QMessageBox.critical(self, "Training failed", trace[-800:])
+        show_error(
+            self, "Training failed",
+            "Training could not finish. Try again with fewer images, or "
+            "check that the selected files are readable.",
+            trace,
+        )
 
     # ------------------------------------------------------------ model table
 

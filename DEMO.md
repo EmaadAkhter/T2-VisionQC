@@ -20,6 +20,10 @@ cd admin-web && npm install && npm run dev    # http://localhost:5173
 python3 -m desktop.launcher
 ```
 
+Packaged macOS app: the first time you open a camera, macOS asks for camera
+access — click **Allow**. To reset the prompt during rehearsal:
+`tccutil reset Camera com.visionqc.desktop`.
+
 Web console: sign up (first user) → **create organization** → invite the
 demo users with roles. The desktop asks only for email and password and
 auto-joins the assigned organization.

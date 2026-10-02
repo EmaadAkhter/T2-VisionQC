@@ -38,9 +38,9 @@ class MaskEditorDialog(QDialog):
 
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "Left-drag: include · Right-drag: exclude · "
-            "The green area is scored at runtime. Approve when the product "
-            "region looks right."
+            "Left-drag: include · Right-drag or Erase mode: exclude · "
+            "Hold Option to erase temporarily. The green area is scored at "
+            "runtime. Approve when the product region looks right."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -56,6 +56,13 @@ class MaskEditorDialog(QDialog):
         self.brush_slider.setRange(4, 80)
         self.brush_slider.setValue(24)
         controls.addWidget(self.brush_slider, 1)
+
+        self.erase_button = QPushButton("Erase")
+        self.erase_button.setCheckable(True)
+        self.erase_button.setToolTip(
+            "When enabled, left-drag removes area from the mask"
+        )
+        controls.addWidget(self.erase_button)
 
         undo_button = QPushButton("Undo")
         undo_button.clicked.connect(self._undo_stroke)
@@ -109,9 +116,12 @@ class MaskEditorDialog(QDialog):
         if self.canvas.geometry().contains(event.position().toPoint()):
             self._undo.append(self.mask.copy())
             self._painting = True
-            self._paint_value = (
-                1 if event.button() == Qt.MouseButton.LeftButton else 0
+            erase = (
+                event.button() == Qt.MouseButton.RightButton
+                or self.erase_button.isChecked()
+                or bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
             )
+            self._paint_value = 0 if erase else 1
             self._paint_at(self._to_canvas(event.position().toPoint()),
                            self._paint_value)
             self._render()

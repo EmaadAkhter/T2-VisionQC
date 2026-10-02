@@ -3,6 +3,7 @@
 # Output: dist/VisionQC/ (onedir, run the VisionQC executable inside)
 
 from pathlib import Path
+import re
 import sys
 
 from PyInstaller.utils.hooks import (
@@ -14,6 +15,13 @@ from PyInstaller.utils.hooks import (
 
 SPEC_DIR = Path(SPECPATH).resolve()
 ROOT = SPEC_DIR.parent
+
+# Single source of truth for the version (desktop/__init__.py).
+_version_match = re.search(
+    r'__version__\s*=\s*"([^"]+)"',
+    (ROOT / "desktop" / "__init__.py").read_text(encoding="utf-8"),
+)
+VERSION = _version_match.group(1) if _version_match else "0.0.0"
 
 datas = []
 binaries = []
@@ -131,14 +139,25 @@ if sys.platform == "darwin":
         name="VisionQC.app",
         icon=str(ROOT / "packaging" / "icon.icns"),
         bundle_identifier="com.visionqc.desktop",
-        version="0.3.0",
+        version=VERSION,
         info_plist={
             "CFBundleDisplayName": "VisionQC",
             "CFBundleName": "VisionQC",
-            "CFBundleShortVersionString": "0.3.0",
-            "CFBundleVersion": "0.3.0",
+            "CFBundleShortVersionString": VERSION,
+            "CFBundleVersion": VERSION,
             "LSMinimumSystemVersion": "12.0",
             "LSApplicationCategoryType": "public.app-category.productivity",
             "NSHighResolutionCapable": True,
+            # Required by macOS TCC: without these keys the process is killed
+            # the moment OpenCV/AVFoundation touches the camera.
+            "NSCameraUsageDescription": (
+                "VisionQC uses the camera to capture product images for "
+                "visual inspection and anomaly detection. Images are "
+                "processed locally on this machine."
+            ),
+            "NSMicrophoneUsageDescription": (
+                "VisionQC may access the microphone only if a video source "
+                "requires it; audio is never recorded or uploaded."
+            ),
         },
     )

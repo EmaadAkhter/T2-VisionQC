@@ -120,6 +120,7 @@ QPushButton {{
 }}
 QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT_DARK}; }}
 QPushButton:pressed {{ background: {ACCENT_SOFT}; }}
+QPushButton:checked {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; color: {ACCENT_DARK}; }}
 QPushButton:disabled {{ color: {FAINT}; border-color: {BORDER}; }}
 
 QPushButton#Primary {{

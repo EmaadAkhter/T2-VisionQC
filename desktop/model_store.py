@@ -66,6 +66,7 @@ class ModelStore:
         self._version: str | None = None
         self._artifacts: ProfileArtifacts | None = None
         self._profile_id: str | None = None
+        self._artifacts_signature: tuple | None = None
 
     def active_version(self) -> str | None:
         return db.get_settings().get("active_model_version")
@@ -73,16 +74,34 @@ class ModelStore:
     def active_profile(self) -> dict | None:
         return db.get_active_profile()
 
+    @staticmethod
+    def _mtime(path: str | None) -> float | None:
+        try:
+            return os.path.getmtime(path) if path else None
+        except OSError:
+            return None
+
     def artifacts(self) -> ProfileArtifacts | None:
         profile = self.active_profile()
         if not profile:
             self._artifacts = None
             self._profile_id = None
+            self._artifacts_signature = None
             return None
-        if self._artifacts is not None and self._profile_id == profile["id"]:
+        # Cache on file mtimes too: editing the mask must take effect
+        # without restarting the app or retraining.
+        signature = (
+            profile["id"],
+            self._mtime(profile.get("canonical_mask_path")),
+            self._mtime(profile.get("presence_regions_path")),
+            self._mtime(profile.get("background_model_path")),
+        )
+        if (self._artifacts is not None
+                and self._artifacts_signature == signature):
             return self._artifacts
         self._artifacts = ProfileArtifacts(profile)
         self._profile_id = profile["id"]
+        self._artifacts_signature = signature
         return self._artifacts
 
     def get(self) -> PatchCoreModel | None:

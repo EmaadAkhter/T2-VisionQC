@@ -31,6 +31,13 @@ from PySide6.QtWidgets import (
 from desktop.auth import AuthError, AuthService, OrgContext
 from desktop.model_store import ModelStore, log_inspection, run_inspection
 from desktop import theme
+from desktop.ui.camera_stream import (
+    OPEN_FAILED,
+    CameraStream,
+    camera_error_message,
+    safe_stop,
+    show_camera_error,
+)
 from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
 
 
@@ -61,7 +68,10 @@ class LineCameraWorker(QThread):
         )
         capture = cv2.VideoCapture(source)
         if not capture.isOpened():
-            self.error.emit(self.camera["id"], "could not open the stream")
+            self.error.emit(
+                self.camera["id"],
+                camera_error_message(OPEN_FAILED, self.camera["address"]),
+            )
             return
         while self.running:
             ok, frame = capture.read()
@@ -96,8 +106,7 @@ class LineCameraWorker(QThread):
         capture.release()
 
     def stop(self) -> None:
-        self.running = False
-        self.wait(3000)
+        safe_stop(self)
 
 
 def _qr_pixmap(payload: str, size: int) -> QPixmap:
@@ -114,40 +123,6 @@ def _qr_pixmap(payload: str, size: int) -> QPixmap:
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
-
-
-class CameraStream(QThread):
-    """Continuously read frames from a USB index or RTSP URL."""
-
-    frame_ready = Signal(object)
-
-    def __init__(self, kind: str, address: str):
-        super().__init__()
-        self.kind = kind
-        self.address = address
-        self.running = True
-
-    def run(self) -> None:  # noqa: D102
-        source: int | str = (
-            int(self.address) if self.kind == "usb" and self.address.isdigit()
-            else self.address
-        )
-        capture = cv2.VideoCapture(source)
-        if not capture.isOpened():
-            self.frame_ready.emit(None)
-            return
-        while self.running:
-            ok, frame = capture.read()
-            if not ok:
-                self.msleep(200)
-                continue
-            self.frame_ready.emit(frame)
-            self.msleep(40)
-        capture.release()
-
-    def stop(self) -> None:
-        self.running = False
-        self.wait(3000)
 
 
 class CameraDialog(QDialog):
@@ -604,25 +579,31 @@ class CamerasPage(QWidget):
             return
         if camera["kind"] == "mobile":
             self.preview_status.setText(
-                "Mobile cameras stream from the phone app (Phase C)."
+                "Mobile cameras stream from the phone app — live view and "
+                "inspection happen on the phone; frames reach this machine "
+                "through the edge server."
             )
             return
         self._stop_preview()
         self.stream = CameraStream(camera["kind"], camera["address"])
         self.stream.frame_ready.connect(self._on_frame)
+        self.stream.error.connect(
+            lambda kind, address=camera["address"]:
+                self._on_stream_error(kind, address)
+        )
         self.stream.start()
         self.preview_status.setText(f"Connecting to {camera['address']}…")
 
     def _on_frame(self, frame) -> None:
-        if frame is None:
-            self.preview_status.setText(
-                "Could not open the stream. Check the address and network."
-            )
-            return
         self.preview_label.setPixmap(bgr_to_pixmap(frame, 520, 360))
         self.preview_status.setText(
             f"Live · {time.strftime('%H:%M:%S')}"
         )
+
+    def _on_stream_error(self, kind: str, address: str) -> None:
+        self._stop_preview()
+        self.preview_status.setText("Preview stopped — camera error.")
+        show_camera_error(self, kind, address)
 
     def _stop_preview(self) -> None:
         if self.stream is not None:
@@ -630,7 +611,11 @@ class CamerasPage(QWidget):
             self.stream = None
         self.preview_status.setText("Preview stopped.")
 
-    def closeEvent(self, event) -> None:  # noqa: N802
+    def on_leave(self) -> None:
+        """Stop all live capture before the page is hidden or destroyed."""
         self._stop_preview()
         self._stop_line()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.on_leave()
         super().closeEvent(event)

@@ -183,14 +183,21 @@ class MainWindow(QMainWindow):
         """Recreate pages so they bind to the newly selected organization."""
         current = self._current_key
         for page in self.pages.values():
+            if hasattr(page, "on_leave"):
+                page.on_leave()
             self.stack.removeWidget(page)
             page.deleteLater()
         self.pages = {}
         self._switch(current)
+        self.refresh_model_label()
 
     # ----------------------------------------------------------------- pages
 
     def _switch(self, key: str) -> None:
+        current = self.pages.get(self._current_key)
+        if current is not None and key != self._current_key:
+            if hasattr(current, "on_leave"):
+                current.on_leave()
         self._current_key = key
         if key not in self.pages:
             self.pages[key] = self._create_page(key)
@@ -296,6 +303,9 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        current = self.pages.get(self._current_key)
+        if current is not None and hasattr(current, "on_leave"):
+            current.on_leave()
         if self.edge is not None:
             self.edge.stop()
         if self.sync_engine is not None:

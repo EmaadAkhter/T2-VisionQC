@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -22,6 +22,8 @@ from db import database as db
 from desktop import theme
 from desktop.auth import AuthService, OrgContext
 from desktop.model_store import ModelStore, log_inspection, run_inspection
+from desktop.ui.camera_stream import CameraStream, show_camera_error
+from desktop.ui.errors import show_error
 from desktop.ui.widgets import (
     ScoreBar,
     VerdictBanner,
@@ -50,14 +52,10 @@ class InspectPage(QWidget):
         self.status_bar = status_bar
         self.sync_engine = sync_engine
         self.model_store = ModelStore()
-        self.capture: cv2.VideoCapture | None = None
+        self.stream: CameraStream | None = None
         self.pending_image: np.ndarray | None = None
         self.last_uid: str | None = None
         self.current_frame: np.ndarray | None = None
-
-        self.preview_timer = QTimer(self)
-        self.preview_timer.setInterval(40)
-        self.preview_timer.timeout.connect(self._pull_frame)
 
         self._build_ui()
         self._refresh_model_status()
@@ -177,39 +175,44 @@ class InspectPage(QWidget):
     # ----------------------------------------------------------------- camera
 
     def _toggle_camera(self) -> None:
-        if self.capture is not None:
+        if self.stream is not None:
             self._stop_camera()
             return
         index = self.camera_combo.currentData()
-        capture = cv2.VideoCapture(index)
-        if not capture.isOpened():
-            QMessageBox.warning(
-                self, "Camera unavailable",
-                f"Could not open camera {index}. Check permissions or use "
-                "the upload fallback.",
-            )
-            return
-        self.capture = capture
+        self.stream = CameraStream("usb", str(index))
+        self.stream.opened.connect(self._on_camera_opened)
+        self.stream.frame_ready.connect(self._on_frame)
+        self.stream.error.connect(
+            lambda kind, address=str(index): self._on_stream_error(kind, address)
+        )
+        self.camera_button.setEnabled(False)
+        self.camera_button.setText("Starting…")
+        self.stream.start()
+
+    def _on_camera_opened(self) -> None:
+        self.camera_button.setEnabled(True)
         self.camera_button.setText("Stop camera")
         self.capture_button.setEnabled(True)
-        self.preview_timer.start()
+
+    def _on_stream_error(self, kind: str, address: str) -> None:
+        self._stop_camera()
+        show_camera_error(self, kind, address)
 
     def _stop_camera(self) -> None:
-        self.preview_timer.stop()
-        if self.capture is not None:
-            self.capture.release()
-            self.capture = None
+        if self.stream is not None:
+            self.stream.stop()
+            self.stream = None
+        self.camera_button.setEnabled(True)
         self.camera_button.setText("Start camera")
         self.capture_button.setEnabled(False)
 
-    def _pull_frame(self) -> None:
-        if self.capture is None:
-            return
-        ok, frame = self.capture.read()
-        if not ok:
-            return
+    def _on_frame(self, frame) -> None:
         self.current_frame = frame
         self.preview_label.setPixmap(bgr_to_pixmap(frame, 640, 420))
+
+    def on_leave(self) -> None:
+        """Stop live capture when the user navigates away."""
+        self._stop_camera()
 
     def _capture_frame(self) -> None:
         if self.current_frame is None:
@@ -229,6 +232,8 @@ class InspectPage(QWidget):
             QMessageBox.warning(self, "Unreadable image",
                                 "The selected file could not be decoded.")
             return
+        # Stop the live feed so it cannot overwrite the uploaded image.
+        self._stop_camera()
         self.pending_image = image
         self.preview_label.setPixmap(bgr_to_pixmap(image, 640, 420))
         self.inspect_button.setEnabled(True)
@@ -270,7 +275,12 @@ class InspectPage(QWidget):
     def _inspect_failed(self, trace: str) -> None:
         self.inspect_button.setEnabled(True)
         self.inspect_button.setText("Inspect")
-        QMessageBox.critical(self, "Inspection failed", trace[-800:])
+        show_error(
+            self, "Inspection failed",
+            "The inspection could not finish. Try again, or retrain the "
+            "model if this keeps happening.",
+            trace,
+        )
 
     def _show_result(self, result: dict, model) -> None:
         self.inspect_button.setEnabled(True)
