@@ -1,0 +1,4 @@
+# Optional local segmentation experiments for data/poc.
+# Base app dependencies remain in requirements.txt.
+transformers>=5.17,<6
+rembg[cpu]>=2.0.85,<3

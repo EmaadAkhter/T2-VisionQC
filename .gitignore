@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Editors and OS metadata
+.DS_Store
+.idea/
+.vscode/
+
+# Local/runtime data: datasets, user photos, models, inspection evidence,
+# screenshots, SQLite state, and generated POC masks/reports.
+/data/*
+!/data/poc/
+/data/poc/*
+!/data/poc/manifest.json
+!/data/poc/SEGMENTATION_POC.md
+
+# Databases and model artifacts, even if placed outside data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pt
+*.pth
+*.onnx
+
+# Frontend/build output if added later
+node_modules/
+dist/
+build/
+target/

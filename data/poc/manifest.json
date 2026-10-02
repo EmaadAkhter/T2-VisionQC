@@ -1,0 +1,71 @@
+{
+  "dataset": "visionqc-real-world-poc-2026-10-02",
+  "product": "clear bottle with blue cap and printed sticker/label",
+  "label_source": "user-provided labels; verify filename-to-image mapping against contact sheet",
+  "images": [
+    {
+      "id": "image_01",
+      "file": "raw/wa_52.jpeg",
+      "condition": "good",
+      "cap_present": true,
+      "sticker_present": true,
+      "orientation": "varied-good-view"
+    },
+    {
+      "id": "image_02",
+      "file": "raw/wa_53a.jpeg",
+      "condition": "good",
+      "cap_present": true,
+      "sticker_present": true,
+      "orientation": "varied-good-view"
+    },
+    {
+      "id": "image_03",
+      "file": "raw/wa_53b.jpeg",
+      "condition": "good",
+      "cap_present": true,
+      "sticker_present": true,
+      "orientation": "varied-good-view"
+    },
+    {
+      "id": "image_04",
+      "file": "raw/wa_53c.jpeg",
+      "condition": "good",
+      "cap_present": true,
+      "sticker_present": true,
+      "orientation": "varied-good-view"
+    },
+    {
+      "id": "image_05",
+      "file": "raw/wa_53d.jpeg",
+      "condition": "good",
+      "cap_present": true,
+      "sticker_present": true,
+      "orientation": "varied-good-view"
+    },
+    {
+      "id": "image_06",
+      "file": "raw/wa_54a.jpeg",
+      "condition": "cap_missing",
+      "cap_present": false,
+      "sticker_present": true,
+      "orientation": "varied-view"
+    },
+    {
+      "id": "image_07",
+      "file": "raw/wa_54b.jpeg",
+      "condition": "sticker_missing",
+      "cap_present": true,
+      "sticker_present": false,
+      "orientation": "varied-view"
+    },
+    {
+      "id": "image_08",
+      "file": "raw/wa_54c.jpeg",
+      "condition": "cap_and_sticker_missing",
+      "cap_present": false,
+      "sticker_present": false,
+      "orientation": "varied-view"
+    }
+  ]
+}
