@@ -60,11 +60,16 @@ class ProfileArtifacts:
 
 
 class ModelStore:
-    """Loads and caches the active local model and profile."""
+    """Loads and caches local models, by active version or per camera.
+
+    Models are small (memory bank only, a few MB), so a bounded in-memory
+    cache keeps switching between camera/model assignments instant.
+    """
+
+    MAX_CACHED_MODELS = 4
 
     def __init__(self):
-        self._model: PatchCoreModel | None = None
-        self._version: str | None = None
+        self._models: dict[str, PatchCoreModel] = {}
         self._artifacts: ProfileArtifacts | None = None
         self._profile_id: str | None = None
         self._artifacts_signature: tuple | None = None
@@ -74,6 +79,13 @@ class ModelStore:
 
     def active_profile(self) -> dict | None:
         return db.get_active_profile()
+
+    def model_name(self, version: str) -> str:
+        """Human label for a version: its name, else the version id."""
+        meta = db.get_model(version)
+        if meta and meta.get("name"):
+            return meta["name"]
+        return version
 
     @staticmethod
     def _mtime(path: str | None) -> float | None:
@@ -105,14 +117,14 @@ class ModelStore:
         self._artifacts_signature = signature
         return self._artifacts
 
-    def get(self) -> PatchCoreModel | None:
-        version = self.active_version()
+    def get(self, version: str | None = None) -> PatchCoreModel | None:
+        """Load a model by version; None means the active model."""
+        version = version or self.active_version()
         if not version:
-            self._model = None
-            self._version = None
             return None
-        if self._model is not None and self._version == version:
-            return self._model
+        cached = self._models.get(version)
+        if cached is not None:
+            return cached
         meta = db.get_model(version)
         if not meta or not meta.get("model_path"):
             return None
@@ -123,9 +135,20 @@ class ModelStore:
         model.load(path)
         # Interactive desktop use: use the Apple GPU / CUDA when available.
         model.to(auto_device())
-        self._model = model
-        self._version = version
+        if len(self._models) >= self.MAX_CACHED_MODELS:
+            self._models.clear()
+        self._models[version] = model
         return model
+
+    def get_for_camera(self, camera_key: str) -> PatchCoreModel | None:
+        """Model assigned to a camera/source, falling back to the active one."""
+        assignment = db.get_camera_model(camera_key)
+        version = assignment.get("model_version") if assignment else None
+        return self.get(version)
+
+    def versions(self) -> list[dict]:
+        """All trained models, newest first, with their human labels."""
+        return db.get_all_models()
 
 
 def run_inspection(image: np.ndarray, model: PatchCoreModel,

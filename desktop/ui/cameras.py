@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 from desktop.auth import AuthError, AuthService, OrgContext
 from desktop.model_store import ModelStore, log_inspection, run_inspection
 from desktop import theme
+from db import database as db
 from desktop.ui.camera_stream import (
     OPEN_FAILED,
     CameraStream,
@@ -78,7 +80,7 @@ class LineCameraWorker(QThread):
             if not ok:
                 self.msleep(500)
                 continue
-            model = self.model_store.get()
+            model = self.model_store.get_for_camera(self.camera["id"])
             if model is None:
                 self.error.emit(self.camera["id"], "no active model")
                 self.msleep(2000)
@@ -231,7 +233,9 @@ class CamerasPage(QWidget):
         columns.setSpacing(14)
 
         table_card, table_layout = card("Registered cameras")
-        self.table = make_table(["Name", "Type", "Address", "Line", "Product"])
+        self.table = make_table(
+            ["Name", "Type", "Address", "Line", "Product", "Model"]
+        )
         self.table.itemSelectionChanged.connect(self._selection_changed)
         table_layout.addWidget(self.table)
 
@@ -242,6 +246,9 @@ class CamerasPage(QWidget):
         stop = QPushButton("Stop preview")
         stop.clicked.connect(self._stop_preview)
         buttons.addWidget(stop)
+        assign = QPushButton("Assign model…")
+        assign.clicked.connect(self._assign_model)
+        buttons.addWidget(assign)
         edit = QPushButton("Edit")
         edit.clicked.connect(self._edit_camera)
         buttons.addWidget(edit)
@@ -490,12 +497,19 @@ class CamerasPage(QWidget):
         product_names = {p["id"]: p["name"] for p in self._lookups()[1]}
         self.table.setRowCount(len(self.cameras))
         for row, camera in enumerate(self.cameras):
+            assignment = db.get_camera_model(camera["id"])
+            version = assignment.get("model_version") if assignment else None
+            model_label = (
+                self.model_store.model_name(version) if version
+                else "Active model"
+            )
             values = [
                 camera["name"],
                 camera["kind"],
                 camera["address"],
                 line_names.get(camera.get("line_id"), "—"),
                 product_names.get(camera.get("product_id"), "—"),
+                model_label,
             ]
             for col, text in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(text))
@@ -551,6 +565,35 @@ class CamerasPage(QWidget):
             QMessageBox.critical(self, "Could not save", str(exc))
             return
         self._load()
+
+    def _assign_model(self) -> None:
+        camera = self._selected()
+        if not camera:
+            QMessageBox.information(self, "Select a camera",
+                                    "Choose a camera in the table first.")
+            return
+        models = db.get_all_models()
+        if not models:
+            QMessageBox.information(
+                self, "No models",
+                "Train a model on the Train page first.",
+            )
+            return
+        labels = ["Active model"] + [
+            f"{m.get('name') or m['version']} ({m['version']})"
+            for m in models
+        ]
+        choice, ok = QInputDialog.getItem(
+            self, "Assign model", f"Model for '{camera['name']}':",
+            labels, 0, False,
+        )
+        if not ok:
+            return
+        index = labels.index(choice)
+        version = None if index == 0 else models[index - 1]["version"]
+        db.set_camera_model(camera["id"], version)
+        self._render_table()
+        self.status_bar.showMessage(f"{camera['name']} now uses {choice}", 4000)
 
     def _delete_camera(self) -> None:
         camera = self._selected()

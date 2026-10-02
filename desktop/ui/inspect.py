@@ -59,6 +59,8 @@ ACTION_TEXT = {
 LATEST_RESULT_TTL_S = 3.0
 # How often to re-check the active profile mask for the outline overlay.
 OUTLINE_CHECK_INTERVAL_S = 1.0
+# Sentinel: keep the current combo selection when rebuilding the list.
+_KEEP_SELECTION = object()
 
 
 class InspectPage(QWidget):
@@ -72,6 +74,7 @@ class InspectPage(QWidget):
         self.model_store = ModelStore()
         self.stream: CameraStream | None = None
         self.live_worker: LiveInferenceWorker | None = None
+        self._live_model = None
         self.latest_result: dict | None = None
         self.latest_result_at = 0.0
         self.last_uid: str | None = None
@@ -86,8 +89,48 @@ class InspectPage(QWidget):
         self._outline_checked_at = 0.0
 
         self._build_ui()
+        self._refresh_model_combo()
+        self._on_camera_index_changed()
         self._refresh_model_status()
         self._refresh_recent()
+
+    # ------------------------------------------------------------- models
+
+    def _camera_key(self) -> str:
+        return f"usb:{self.camera_combo.currentData()}"
+
+    def _refresh_model_combo(self, select_version=_KEEP_SELECTION) -> None:
+        """Rebuild the model picker, keeping or applying a selection.
+
+        ``select_version=None`` explicitly selects "Active model"; omit the
+        argument to keep whatever the operator selected.
+        """
+        current = (self.model_combo.currentData()
+                   if select_version is _KEEP_SELECTION else select_version)
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItem("Active model", None)
+        for meta in self.model_store.versions():
+            label = meta.get("name") or meta["version"]
+            self.model_combo.addItem(label, meta["version"])
+        index = self.model_combo.findData(current)
+        self.model_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.model_combo.blockSignals(False)
+
+    def _on_camera_index_changed(self) -> None:
+        assignment = db.get_camera_model(self._camera_key())
+        version = assignment.get("model_version") if assignment else None
+        self._refresh_model_combo(select_version=version)
+
+    def _on_model_changed(self) -> None:
+        db.set_camera_model(self._camera_key(), self.model_combo.currentData())
+        if self.live_worker is not None:
+            self._restart_live()
+        self._refresh_model_status()
+
+    def _selected_model(self):
+        """Model for the current camera selection (None -> active model)."""
+        return self.model_store.get(self.model_combo.currentData())
 
     # --------------------------------------------------------------------- ui
 
@@ -130,9 +173,17 @@ class InspectPage(QWidget):
 
         controls = QHBoxLayout()
         controls.setSpacing(theme.SPACE_S)
+        self.model_combo = QComboBox()
+        self.model_combo.setToolTip(
+            "Model used for live inference on this camera; saved per camera."
+        )
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        controls.addWidget(self.model_combo)
+
         self.camera_combo = QComboBox()
         self.camera_combo.addItem("Camera 0 (built-in)", 0)
         self.camera_combo.addItem("Camera 1", 1)
+        self.camera_combo.currentIndexChanged.connect(self._on_camera_index_changed)
         controls.addWidget(self.camera_combo)
 
         self.camera_button = QPushButton("Start live inspection")
@@ -219,7 +270,9 @@ class InspectPage(QWidget):
         if self.stream is not None:
             self._stop_camera()
             return
-        if self.model_store.get() is None:
+        # Pick up models trained since this page was built.
+        self._refresh_model_combo()
+        if self._selected_model() is None:
             QMessageBox.warning(self, "No model",
                                 "Train a model on the Train page first.")
             return
@@ -235,19 +288,36 @@ class InspectPage(QWidget):
         self.stream.start()
 
     def _on_camera_opened(self) -> None:
-        model = self.model_store.get()
+        model = self._selected_model()
         if model is None:
             self._stop_camera()
             return
         self.camera_button.setEnabled(True)
         self.camera_button.setText("Stop live inspection")
+        self._start_live_worker(model)
+
+    def _start_live_worker(self, model) -> None:
         self.decider.reset()
+        self._live_model = model
         self.live_worker = LiveInferenceWorker(
             model, db.get_settings(), self.model_store.artifacts()
         )
         self.live_worker.result_ready.connect(self._on_live_result)
         self.live_worker.failed.connect(self._on_live_failed)
         self.live_worker.start()
+
+    def _restart_live(self) -> None:
+        """Swap the running live worker onto the newly selected model."""
+        model = self._selected_model()
+        if model is None or self.live_worker is None:
+            return
+        self.live_worker.running = False
+        safe_stop(self.live_worker)
+        self.live_worker = None
+        self._start_live_worker(model)
+        self.status_bar.showMessage(
+            f"Live model switched to {self.model_combo.currentText()}", 3000
+        )
 
     def _on_stream_error(self, kind: str, address: str) -> None:
         self._stop_camera()
@@ -258,6 +328,7 @@ class InspectPage(QWidget):
             self.live_worker.running = False
             safe_stop(self.live_worker)
             self.live_worker = None
+        self._live_model = None
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
@@ -381,8 +452,8 @@ class InspectPage(QWidget):
 
     # ------------------------------------------------------------------ log
 
-    def _log_result(self, result: dict, reason: str) -> str | None:
-        model = self.model_store.get()
+    def _log_result(self, result: dict, reason: str, model=None) -> str | None:
+        model = model or self._live_model or self._selected_model()
         if model is None or "frame" not in result:
             return None
         uid = log_inspection(result, result["frame"], model.model_version)
@@ -422,7 +493,7 @@ class InspectPage(QWidget):
         self.preview_label.setPixmap(
             bgr_to_pixmap(self._with_outline(image), 640, 420)
         )
-        model = self.model_store.get()
+        model = self._selected_model()
         if model is None:
             QMessageBox.warning(self, "No model",
                                 "Train a model on the Train page first.")
@@ -432,17 +503,17 @@ class InspectPage(QWidget):
         self.status_bar.showMessage("Inspecting image…")
         worker = FunctionWorker(run_inspection, image, model, settings, artifacts)
         worker.finished_ok.connect(
-            lambda result: self._on_image_result(result, image)
+            lambda result: self._on_image_result(result, image, model)
         )
         worker.failed.connect(self._inspect_failed)
         self._inspect_worker = worker
         worker.start()
 
-    def _on_image_result(self, result: dict, image: np.ndarray) -> None:
+    def _on_image_result(self, result: dict, image: np.ndarray, model) -> None:
         result = dict(result)
         result["frame"] = image
         self._apply_result(result)
-        self._log_result(result, reason="Logged image")
+        self._log_result(result, reason="Logged image", model=model)
 
     def _inspect_failed(self, trace: str) -> None:
         show_error(

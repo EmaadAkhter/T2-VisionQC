@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -31,7 +32,7 @@ from service.inference import MIN_TRAIN_IMAGES, PatchCoreModel, TARGET_TRAIN_IMA
 from service.backbones import engine_display_name, resolve_default_engine
 
 
-def train_model(image_paths: list[str]) -> dict:
+def train_model(image_paths: list[str], name: str | None = None) -> dict:
     """Train and persist a new model version (runs on a worker thread)."""
     backbone, kwargs = resolve_default_engine(len(image_paths))
     model = PatchCoreModel(backbone=backbone, backbone_kwargs=kwargs)
@@ -53,10 +54,12 @@ def train_model(image_paths: list[str]) -> dict:
         baseline_blur=model.training_stats.get("median_blur", 0),
         parent_version=None,
         model_path=model_path,
+        name=name,
     )
     db.update_settings("default", "active_model_version", model.model_version)
     stats["model_path"] = model_path
     stats["backbone"] = engine_display_name(model.backbone.config()["name"])
+    stats["name"] = name
     return stats
 
 
@@ -115,6 +118,15 @@ class TrainPage(QWidget):
         self.thumb_label.setMinimumHeight(260)
         layout.addWidget(self.thumb_label, 1)
 
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Model name"))
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText(
+            "e.g. Bottle — line A (optional, helps operators pick the right one)"
+        )
+        name_row.addWidget(self.name_input, 1)
+        layout.addLayout(name_row)
+
         self.train_button = QPushButton("Train model")
         self.train_button.setObjectName("Primary")
         self.train_button.setEnabled(False)
@@ -128,7 +140,7 @@ class TrainPage(QWidget):
     def _build_models_card(self) -> QWidget:
         frame, layout = card("Model versions")
         self.models_table = make_table(
-            ["Version", "Images", "Created", "Active"]
+            ["Name", "Version", "Images", "Created", "Active"]
         )
         layout.addWidget(self.models_table)
 
@@ -218,7 +230,10 @@ class TrainPage(QWidget):
             f"Training on {len(self.selected_paths)} images… "
             "(a few seconds to a minute on CPU)"
         )
-        self.worker = FunctionWorker(train_model, list(self.selected_paths))
+        self.worker = FunctionWorker(
+            train_model, list(self.selected_paths),
+            self.name_input.text().strip() or None,
+        )
         self.worker.finished_ok.connect(self._train_done)
         self.worker.failed.connect(self._train_failed)
         self.worker.start()
@@ -226,10 +241,12 @@ class TrainPage(QWidget):
     def _train_done(self, stats: dict) -> None:
         self.train_button.setEnabled(True)
         self.train_button.setText("Train model")
+        label = stats.get("name") or stats["model_version"]
         self.progress_label.setText(
-            f"Trained {stats['model_version']} on {stats['n_training_images']} "
+            f"Trained {label} on {stats['n_training_images']} "
             f"images · bank {stats['memory_bank_size']} · ref {stats['ref_score']:.2f}"
         )
+        self.name_input.clear()
         self.status_bar.showMessage("Model trained and activated", 5000)
         self._refresh_models()
         window = self.window()
@@ -255,6 +272,7 @@ class TrainPage(QWidget):
         self.models_table.setRowCount(len(models))
         for row, model in enumerate(models):
             values = [
+                model.get("name") or "—",
                 model.get("version", ""),
                 str(model.get("n_images", "")),
                 str(model.get("created_at", ""))[:19],
@@ -262,7 +280,7 @@ class TrainPage(QWidget):
             ]
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
-                if col == 3 and text:
+                if col == 4 and text:
                     item.setForeground(Qt.GlobalColor.darkGreen)
                 self.models_table.setItem(row, col, item)
         self.models_table.resizeColumnsToContents()
@@ -273,7 +291,7 @@ class TrainPage(QWidget):
             QMessageBox.information(self, "Select a version",
                                     "Choose a model version in the table first.")
             return
-        version = self.models_table.item(rows[0].row(), 0).text()
+        version = self.models_table.item(rows[0].row(), 1).text()
         db.update_settings("default", "active_model_version", version)
         self._refresh_models()
         window = self.window()

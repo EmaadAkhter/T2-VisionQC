@@ -88,6 +88,19 @@ def init_db():
                 model_path TEXT
             )
         """)
+        _add_column(conn, "models", "name", "TEXT")
+
+        # Per-camera model assignment (local station scope). camera_key is
+        # either a cloud camera id or "usb:<index>" for the built-in camera.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS camera_models (
+                camera_key TEXT PRIMARY KEY,
+                model_version TEXT,
+                threshold REAL,
+                delta REAL,
+                updated_at TEXT
+            )
+        """)
 
         # Settings table
         conn.execute("""
@@ -574,18 +587,63 @@ def save_model_metadata(
     baseline_blur: float,
     parent_version: Optional[str],
     model_path: str,
+    name: Optional[str] = None,
 ):
     """Save model metadata to the database."""
     with get_connection() as conn:
         conn.execute("""
             INSERT OR REPLACE INTO models (
                 version, product_id, created_at, n_images, backbone, coreset_ratio,
-                ref_score, baseline_brightness, baseline_blur, parent_version, model_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ref_score, baseline_brightness, baseline_blur, parent_version,
+                model_path, name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             version, product_id, created_at, n_images, backbone, coreset_ratio,
-            ref_score, baseline_brightness, baseline_blur, parent_version, model_path
+            ref_score, baseline_brightness, baseline_blur, parent_version,
+            model_path, name
         ))
+
+
+def rename_model(version: str, name: str) -> None:
+    """Set the human label of a trained model."""
+    with get_connection() as conn:
+        conn.execute("UPDATE models SET name = ? WHERE version = ?",
+                     (name, version))
+
+
+def set_camera_model(camera_key: str, model_version: Optional[str],
+                     threshold: Optional[float] = None,
+                     delta: Optional[float] = None) -> None:
+    """Assign a model (or None = active model) to a camera / source key."""
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO camera_models (camera_key, model_version, threshold,
+                                       delta, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(camera_key) DO UPDATE SET
+                model_version = excluded.model_version,
+                threshold = excluded.threshold,
+                delta = excluded.delta,
+                updated_at = excluded.updated_at
+        """, (camera_key, model_version, threshold, delta,
+              time.strftime("%Y-%m-%dT%H:%M:%S")))
+
+
+def get_camera_model(camera_key: str) -> Optional[Dict[str, Any]]:
+    """Model assignment for a camera / source key, if any."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT * FROM camera_models WHERE camera_key = ?", (camera_key,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def list_camera_models() -> List[Dict[str, Any]]:
+    """All camera-to-model assignments on this station."""
+    with get_connection() as conn:
+        cursor = conn.execute("SELECT * FROM camera_models ORDER BY camera_key")
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def get_model(version: str) -> Optional[Dict[str, Any]]:
