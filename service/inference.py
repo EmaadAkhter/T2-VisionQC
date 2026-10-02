@@ -455,16 +455,27 @@ def compute_certainty(score: float, verdict: str, threshold: float = DEFAULT_THR
 
 
 def generate_explanation(anomaly_map: np.ndarray, threshold: float = DEFAULT_THRESHOLD,
+                         ref_score: Optional[float] = None,
                          image_shape: Tuple[int, int] = None) -> Dict[str, Any]:
-    """Generate plain-language explanation from an anomaly map."""
+    """Generate plain-language explanation from an anomaly map.
+
+    When `ref_score` is provided the map is converted to the same calibrated
+    score scale as the image verdict (pixel score = clip(0.5 * raw / ref, 0, 1)),
+    so a passing unit cannot produce a "widespread difference" message from
+    per-image stretching. Without `ref_score`, legacy min-max normalisation is
+    used (kept for tests and callers without a model reference).
+    """
     if image_shape is None:
         image_shape = anomaly_map.shape
 
-    map_min, map_max = anomaly_map.min(), anomaly_map.max()
-    if map_max > map_min:
-        normalized_map = (anomaly_map - map_min) / (map_max - map_min)
+    if ref_score and ref_score > 0:
+        normalized_map = np.clip(0.5 * anomaly_map / ref_score, 0.0, 1.0)
     else:
-        normalized_map = np.zeros_like(anomaly_map)
+        map_min, map_max = anomaly_map.min(), anomaly_map.max()
+        if map_max > map_min:
+            normalized_map = (anomaly_map - map_min) / (map_max - map_min)
+        else:
+            normalized_map = np.zeros_like(anomaly_map)
 
     hot_mask = normalized_map >= threshold
 

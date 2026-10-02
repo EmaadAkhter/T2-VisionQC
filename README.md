@@ -24,6 +24,71 @@ defect dataset needed.
   CSV export
 - **Fully offline**: No internet required after setup
 
+## Platform: desktop + mobile + local cloud
+
+The product is moving from the Streamlit prototype to a native platform:
+
+```text
+Phone camera (Flutter app) ──LAN stream──┐
+USB / RTSP cameras ──────────────────────┤
+                                          ▼
+                         Desktop app (PySide6, macOS + Windows)
+                         ├─ local PatchCore inference
+                         ├─ local SQLite edge store + image evidence
+                         ├─ edge server :8765 for phone pairing/frames
+                         └─ sync outbox ──► Supabase (local now, hosted later)
+                                              ├─ auth, organizations, roles
+                                              ├─ cameras / lines / products
+                                              └─ inspections + KPIs
+```
+
+- **Desktop** (`desktop/`): sign in, create/join an organization, train models,
+  inspect from webcam/upload, register cameras, live KPI, cloud sync.
+- **Mobile** (`mobile/`): Flutter companion. Signs in with the same account,
+  pairs with the edge workstation once, then streams the phone camera
+  continuously while the screen is open; verdicts and heatmaps come back from
+  the desktop.
+- **Cloud** (`supabase/`): schema, row-level security and seed data. Runs
+  locally via Docker now; switching to hosted Supabase is a URL/key change.
+- **Edge server** (`desktop/edge_server.py`): LAN-only frame intake with
+  pairing codes and device tokens. Frames are analysed on the desktop and are
+  never uploaded to the cloud.
+
+## Run the platform locally
+
+```bash
+# 1. Start local Supabase (Docker required)
+supabase start
+python3 tools/write_supabase_env.py     # writes desktop + mobile configs
+
+# 2. Verify auth, roles and tenant isolation
+python3 tools/test_rls.py               # 15/15 checks expected
+
+# 3. Run the desktop app
+python3 -m desktop.main
+# Seeded accounts (local only, password for all: visionqc123):
+#   owner@visionqc.local    admin@visionqc.local
+#   operator@visionqc.local analyst@visionqc.local
+
+# 4. Mobile app (Android build)
+cd mobile
+flutter build apk --debug               # output: build/app/outputs/flutter-apk/
+```
+
+Desktop workflow: sign in → choose/create organization → **Train** on 20–30
+good images → **Inspect** with webcam/upload → **Cameras** to register line
+cameras and pair phones → **KPI** to see today's numbers and sync.
+
+Mobile workflow: sign in → choose organization → enter the edge address and
+pairing code shown on the desktop Cameras page → continuous streaming with
+verdict, score, explanation and heatmap.
+
+The old Streamlit prototype remains available for comparison:
+
+```bash
+streamlit run app/main.py
+```
+
 ## Benchmark: MVTec AD
 
 VisionQC was benchmarked against the standard MVTec AD industrial
@@ -129,23 +194,29 @@ Screenshots from the running app (in `data/screenshots/`):
 
 ```
 VisionQC/
-├── app/
-│   └── main.py               # Streamlit UI (Inspect, Train, Dashboard, Settings, Demo)
-├── service/
-│   └── inference.py          # PatchCore model + verdict/certainty/explanation/setup checks
-├── db/
-│   └── database.py           # SQLite layer (inspections, models, settings)
-├── tests/
-│   ├── test_core.py          # 27 unit/integration tests
-│   ├── test_mvtec.py         # MVTec AD benchmark
-│   ├── analyze_scores.py     # Threshold analysis + LOCO validation
-│   ├── fetch_mvtec_hf.py     # Dataset fetcher
-│   └── segment_*_poc.py      # Real-world foreground-segmentation experiments
-├── tools/
-│   └── seed_demo.py          # Train + seed demo inspections
-├── data/                     # Runtime data (models, images, DB, screenshots)
-├── BENCHMARK.md              # Full MVTec AD results
-├── data/poc/                  # Eight real images, masks and POC reports
+├── app/                      # Streamlit prototype (legacy comparison)
+├── desktop/                  # Native PySide6 app (macOS + Windows)
+│   ├── main.py               # entry point
+│   ├── auth.py               # Supabase auth + org membership
+│   ├── edge_server.py        # LAN frame intake for the phone app
+│   ├── model_store.py        # model loading + inspection pipeline
+│   ├── theme.py              # shared styling
+│   ├── smoke_test.py         # offscreen UI construction test
+│   └── ui/                   # login, window, inspect, train, cameras, kpi, settings
+├── mobile/                   # Flutter companion app
+│   └── lib/
+│       ├── main.dart
+│       ├── screens/          # login, pair, stream
+│       └── services/         # edge client
+├── supabase/                 # schema, RLS, storage policies, seed
+│   ├── migrations/
+│   └── seed.sql
+├── service/                  # PatchCore inference + post-processing
+├── db/                       # SQLite edge store (sync outbox)
+├── tests/                    # unit/integration + MVTec benchmark + POC
+├── tools/                    # env writer, RLS tests, demo seeding
+├── data/                     # runtime data (git-ignored)
+├── BENCHMARK.md              # MVTec AD results
 ├── requirements.txt
 └── README.md
 ```
@@ -153,8 +224,11 @@ VisionQC/
 ## Testing
 
 ```bash
-pytest tests/test_core.py -v          # unit + integration tests
-python3 tests/test_mvtec.py --all --root data/mvtec_hf   # benchmark
+pytest tests/test_core.py -v            # inference/logic unit + integration tests
+python3 tools/test_rls.py               # auth, roles, tenant isolation (needs supabase start)
+QT_QPA_PLATFORM=offscreen python3 -m desktop.smoke_test   # desktop pages construct
+cd mobile && flutter analyze && flutter test              # mobile app
+python3 tests/test_mvtec.py --all --root data/mvtec_hf    # MVTec AD benchmark
 ```
 
 ## Configuration

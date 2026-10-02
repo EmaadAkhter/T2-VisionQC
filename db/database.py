@@ -118,6 +118,41 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_model_version ON inspections(model_version)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_demo ON inspections(demo)")
 
+        # Cloud sync flag (added after v1; safe to re-run)
+        try:
+            conn.execute("ALTER TABLE inspections ADD COLUMN synced INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_synced ON inspections(synced)")
+
+
+def get_unsynced_inspections(limit: int = 500) -> List[Dict[str, Any]]:
+    """Inspections not yet pushed to the cloud."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT * FROM inspections WHERE synced = 0 ORDER BY timestamp LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def mark_inspections_synced(row_ids: List[int]) -> None:
+    """Mark local inspections as successfully pushed to the cloud."""
+    if not row_ids:
+        return
+    placeholders = ",".join("?" for _ in row_ids)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE inspections SET synced = 1 WHERE id IN ({placeholders})",
+            row_ids,
+        )
+
+
+def count_unsynced_inspections() -> int:
+    with get_connection() as conn:
+        cursor = conn.execute("SELECT COUNT(*) FROM inspections WHERE synced = 0")
+        return cursor.fetchone()[0]
+
 
 def generate_inspection_uid() -> str:
     """Generate a human-readable inspection ID: INS-YYYYMMDD-NNNN."""

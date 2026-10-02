@@ -177,6 +177,7 @@ def inspect_image(image: np.ndarray, model: PatchCoreModel, settings: dict) -> d
     explanation_data = generate_explanation(
         prediction["anomaly_map"],
         threshold=threshold,
+        ref_score=model.ref_score,
         image_shape=image.shape[:2],
     )
 
