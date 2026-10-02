@@ -1,38 +1,44 @@
-"""Cameras page: register factory cameras and preview their streams."""
+"""Cameras page: register factory cameras, pair phones, one step at a time.
+
+The list stays simple; selecting a camera reveals only the section you need
+(overview, model, preview, delete). "Connect phone" shows a QR code that the
+phone app scans — no typing camera IDs or keys.
+"""
 
 from __future__ import annotations
 
-import socket
 import threading
 import time
-from io import BytesIO
 
 import cv2
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
+    QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from desktop.auth import AuthError, AuthService, OrgContext
-from desktop.model_store import ModelStore, log_inspection, run_inspection
-from desktop import theme
 from db import database as db
+from desktop import theme
+from desktop.auth import AuthService, OrgContext
+from desktop.model_store import ModelStore, log_inspection, run_inspection
+from desktop.server_client import ServerClient
 from desktop.ui.camera_stream import (
     OPEN_FAILED,
     CameraStream,
@@ -40,7 +46,21 @@ from desktop.ui.camera_stream import (
     safe_stop,
     show_camera_error,
 )
-from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
+from desktop.ui.pairing import POPULAR_RELAY_URL, PairingDialog, relay_ws_url
+from desktop.ui.widgets import (
+    CollapsibleSection,
+    bgr_to_pixmap,
+    card,
+    muted,
+    page_header,
+)
+from desktop.worker import FunctionWorker
+
+KIND_LABELS = {
+    "usb": "USB / built-in",
+    "rtsp": "RTSP / IP camera",
+    "mobile": "Mobile (paired)",
+}
 
 
 class LineCameraWorker(QThread):
@@ -111,48 +131,112 @@ class LineCameraWorker(QThread):
         safe_stop(self)
 
 
-def _qr_pixmap(payload: str, size: int) -> QPixmap:
-    """Render a QR code for the pairing payload."""
-    import qrcode
+class PhonePairDialog(QDialog):
+    """Collect the relay details, then show the pairing QR."""
 
-    image = qrcode.make(payload)
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
-    pixmap = QPixmap()
-    pixmap.loadFromData(buffer.getvalue())
-    return pixmap.scaled(
-        size, size,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-
-
-class CameraDialog(QDialog):
-    """Add or edit one camera."""
-
-    def __init__(self, lines: list[dict], products: list[dict], camera: dict | None = None,
-                 parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit camera" if camera else "Add camera")
-        self.setMinimumWidth(420)
+        self.setWindowTitle("Connect phone")
+        self.setMinimumWidth(460)
+        settings = QSettings("VisionQC", "Desktop")
 
         form = QFormLayout(self)
-        self.name_input = QLineEdit(camera["name"] if camera else "")
-        form.addRow("Name", self.name_input)
+        self.url_input = QLineEdit(
+            str(settings.value("relay/url", POPULAR_RELAY_URL)
+                or POPULAR_RELAY_URL)
+        )
+        form.addRow("Relay server", self.url_input)
 
+        self.token_input = QLineEdit(str(settings.value("relay/token", "") or ""))
+        self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Dashboard token", self.token_input)
+
+        self.name_input = QLineEdit("Phone camera")
+        form.addRow("Camera name", self.name_input)
+
+        form.addRow(muted(
+            "The phone scans the QR code and connects by itself — no typing. "
+            "The dashboard token is the server's VISIONQC_DASHBOARD_TOKEN."
+        ))
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(
+            "Show pairing code"
+        )
+        buttons.accepted.connect(self._validate)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _validate(self) -> None:
+        if (not self.url_input.text().strip()
+                or not self.token_input.text().strip()
+                or not self.name_input.text().strip()):
+            QMessageBox.information(
+                self, "Missing details",
+                "Server, token and camera name are all needed.",
+            )
+            return
+        self.accept()
+
+    def values(self) -> tuple[str, str, str]:
+        return (
+            self.url_input.text().strip(),
+            self.token_input.text().strip(),
+            self.name_input.text().strip(),
+        )
+
+
+class CameraWizard(QDialog):
+    """Add or edit a camera one step at a time: name, type, assignment."""
+
+    STEPS = 3
+
+    def __init__(self, lines: list[dict], products: list[dict],
+                 camera: dict | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit camera" if camera else "Add camera")
+        self.setMinimumWidth(430)
+
+        root = QVBoxLayout(self)
+        root.setSpacing(theme.SPACE_S)
+        self.step_label = muted("Step 1 of 3")
+        root.addWidget(self.step_label)
+
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack)
+
+        # Step 1 — name.
+        page = QWidget()
+        form = QFormLayout(page)
+        self.name_input = QLineEdit(camera["name"] if camera else "")
+        self.name_input.setPlaceholderText("e.g. Assembly line camera")
+        form.addRow("Name", self.name_input)
+        self.stack.addWidget(page)
+
+        # Step 2 — type and address.
+        page = QWidget()
+        form = QFormLayout(page)
         self.kind_combo = QComboBox()
-        for kind, label in [("usb", "USB / built-in"), ("rtsp", "RTSP / IP camera"),
-                            ("mobile", "Mobile (paired)")]:
+        for kind, label in KIND_LABELS.items():
             self.kind_combo.addItem(label, kind)
         if camera:
             index = self.kind_combo.findData(camera["kind"])
             self.kind_combo.setCurrentIndex(max(0, index))
+        self.kind_combo.currentIndexChanged.connect(self._kind_changed)
         form.addRow("Type", self.kind_combo)
-
         self.address_input = QLineEdit(camera["address"] if camera else "0")
-        self.address_input.setPlaceholderText("USB index (e.g. 0) or rtsp:// URL")
+        self.address_input.setPlaceholderText(
+            "USB index (e.g. 0) or rtsp:// URL"
+        )
         form.addRow("Address", self.address_input)
+        self.stack.addWidget(page)
 
+        # Step 3 — line and product.
+        page = QWidget()
+        form = QFormLayout(page)
         self.line_combo = QComboBox()
         self.line_combo.addItem("— none —", None)
         for line in lines:
@@ -161,7 +245,6 @@ class CameraDialog(QDialog):
             index = self.line_combo.findData(camera["line_id"])
             self.line_combo.setCurrentIndex(max(0, index))
         form.addRow("Line", self.line_combo)
-
         self.product_combo = QComboBox()
         self.product_combo.addItem("— none —", None)
         for product in products:
@@ -170,14 +253,52 @@ class CameraDialog(QDialog):
             index = self.product_combo.findData(camera["product_id"])
             self.product_combo.setCurrentIndex(max(0, index))
         form.addRow("Product", self.product_combo)
+        self.stack.addWidget(page)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        buttons.addStretch(1)
+        self.back_button = QPushButton("Back")
+        self.back_button.clicked.connect(self._back)
+        buttons.addWidget(self.back_button)
+        self.next_button = QPushButton("Next")
+        self.next_button.setObjectName("Primary")
+        self.next_button.clicked.connect(self._next)
+        buttons.addWidget(self.next_button)
+        root.addLayout(buttons)
+
+        self._kind_changed()
+        self._sync_buttons()
+
+    def _kind_changed(self) -> None:
+        mobile = self.kind_combo.currentData() == "mobile"
+        self.address_input.setEnabled(not mobile)
+        if mobile:
+            self.address_input.setText("0")
+
+    def _sync_buttons(self) -> None:
+        index = self.stack.currentIndex()
+        self.step_label.setText(f"Step {index + 1} of {self.STEPS}")
+        self.back_button.setEnabled(index > 0)
+        last = index == self.STEPS - 1
+        self.next_button.setText("Save" if last else "Next")
+
+    def _back(self) -> None:
+        self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
+        self._sync_buttons()
+
+    def _next(self) -> None:
+        if not self.name_input.text().strip():
+            QMessageBox.information(self, "Name required",
+                                    "Give the camera a name first.")
+            return
+        if self.stack.currentIndex() == self.STEPS - 1:
+            self.accept()
+            return
+        self.stack.setCurrentIndex(self.stack.currentIndex() + 1)
+        self._sync_buttons()
 
     def payload(self) -> dict:
         return {
@@ -196,7 +317,6 @@ class CamerasPage(QWidget):
         self.auth = auth
         self.org = org
         self.status_bar = status_bar
-        self.edge = edge
         self.smoke = smoke
         self.sync_engine = sync_engine
         self.stream: CameraStream | None = None
@@ -204,12 +324,18 @@ class CamerasPage(QWidget):
         self.line_workers: dict[str, LineCameraWorker] = {}
         self.line_tiles: dict[str, dict] = {}
         self.inference_lock = threading.Lock()
+        self.model_store = ModelStore()
+        self._line_names: dict = {}
+        self._product_names: dict = {}
+        self._worker: FunctionWorker | None = None
 
         self._build_ui()
         if not smoke:
             self._load()
         else:
             self._rebuild_line_tiles()
+
+    # --------------------------------------------------------------------- ui
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -220,67 +346,114 @@ class CamerasPage(QWidget):
         header = QHBoxLayout()
         header.addWidget(page_header(
             "Cameras",
-            "Registered in the cloud so the team shares one line layout; "
-            "preview and inference run locally.",
+            "Add factory cameras, or connect a phone with one QR scan.",
         ), 1)
-        add_button = QPushButton("Add camera")
-        add_button.setObjectName("Primary")
-        add_button.clicked.connect(self._add_camera)
-        header.addWidget(add_button)
+        connect = QPushButton("Connect phone")
+        connect.setObjectName("Primary")
+        connect.clicked.connect(self._connect_phone)
+        header.addWidget(connect)
+        add = QPushButton("Add camera")
+        add.clicked.connect(self._add_camera)
+        header.addWidget(add)
         root.addLayout(header)
 
         columns = QHBoxLayout()
         columns.setSpacing(14)
 
-        table_card, table_layout = card("Registered cameras")
-        self.table = make_table(
-            ["Name", "Type", "Address", "Line", "Product", "Model"]
+        list_card, list_layout = card("Registered cameras")
+        self.list = QListWidget()
+        self.list.currentRowChanged.connect(self._selection_changed)
+        list_layout.addWidget(self.list, 1)
+        self.list_hint = muted("No cameras yet. Add one, or connect a phone.")
+        list_layout.addWidget(self.list_hint)
+        columns.addWidget(list_card, 2)
+
+        detail_card, detail_layout = card("Details")
+        detail_layout.addWidget(self._build_detail_pane(), 1)
+        columns.addWidget(detail_card, 3)
+
+        root.addLayout(columns, 1)
+        root.addWidget(self._build_line_section())
+
+    def _build_detail_pane(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.SPACE_S)
+
+        # 1 — Overview.
+        self.overview_section = CollapsibleSection("Overview", expanded=True)
+        form = QFormLayout()
+        self.overview_labels: dict[str, QLabel] = {}
+        for key in ("Type", "Address", "Line", "Product"):
+            value = muted("—")
+            self.overview_labels[key] = value
+            form.addRow(key, value)
+        self.overview_section.body_layout.addLayout(form)
+        self.edit_button = QPushButton("Edit")
+        self.edit_button.clicked.connect(self._edit_camera)
+        self.overview_section.body_layout.addWidget(
+            self.edit_button, alignment=Qt.AlignmentFlag.AlignLeft
         )
-        self.table.itemSelectionChanged.connect(self._selection_changed)
-        table_layout.addWidget(self.table)
+        layout.addWidget(self.overview_section)
 
-        buttons = QHBoxLayout()
-        preview = QPushButton("Preview selected")
-        preview.clicked.connect(self._start_preview)
-        buttons.addWidget(preview)
-        stop = QPushButton("Stop preview")
-        stop.clicked.connect(self._stop_preview)
-        buttons.addWidget(stop)
-        assign = QPushButton("Assign model…")
-        assign.clicked.connect(self._assign_model)
-        buttons.addWidget(assign)
-        edit = QPushButton("Edit")
-        edit.clicked.connect(self._edit_camera)
-        buttons.addWidget(edit)
-        delete = QPushButton("Delete")
-        delete.setObjectName("Danger")
-        delete.clicked.connect(self._delete_camera)
-        buttons.addWidget(delete)
-        table_layout.addLayout(buttons)
-        columns.addWidget(table_card, 3)
+        # 2 — Model.
+        self.model_section = CollapsibleSection("Model")
+        self.model_label = muted("Active model")
+        self.model_section.body_layout.addWidget(self.model_label)
+        self.assign_button = QPushButton("Assign model…")
+        self.assign_button.clicked.connect(self._assign_model)
+        self.model_section.body_layout.addWidget(
+            self.assign_button, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        layout.addWidget(self.model_section)
 
-        preview_card, preview_layout = card("Preview")
-        self.preview_label = QLabel("Select a camera and press Preview")
+        # 3 — Preview.
+        self.preview_section = CollapsibleSection("Preview")
+        self.preview_status = muted("Select a camera and press Preview.")
+        self.preview_section.body_layout.addWidget(self.preview_status)
+        self.preview_label = QLabel("Preview appears here")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(420, 320)
+        self.preview_label.setMinimumSize(320, 200)
         self.preview_label.setStyleSheet(
             f"background: {theme.SIDEBAR_BG}; color: {theme.SIDEBAR_TEXT}; "
             f"border-radius: {theme.RADIUS_CONTROL}px;"
         )
-        preview_layout.addWidget(self.preview_label, 1)
-        self.preview_status = muted("")
-        preview_layout.addWidget(self.preview_status)
-        columns.addWidget(preview_card, 2)
+        self.preview_section.body_layout.addWidget(self.preview_label, 1)
+        preview_controls = QHBoxLayout()
+        self.preview_button = QPushButton("Preview")
+        self.preview_button.setObjectName("Primary")
+        self.preview_button.clicked.connect(self._start_preview)
+        preview_controls.addWidget(self.preview_button)
+        self.stop_button = QPushButton("Stop preview")
+        self.stop_button.clicked.connect(self._stop_preview)
+        self.stop_button.setEnabled(False)
+        preview_controls.addWidget(self.stop_button)
+        preview_controls.addStretch(1)
+        self.preview_section.body_layout.addLayout(preview_controls)
+        layout.addWidget(self.preview_section)
 
-        root.addLayout(columns, 1)
+        # 4 — Delete.
+        self.danger_section = CollapsibleSection("Delete")
+        self.delete_button = QPushButton("Delete camera")
+        self.delete_button.setObjectName("Danger")
+        self.delete_button.clicked.connect(self._delete_camera)
+        self.danger_section.body_layout.addWidget(
+            self.delete_button, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        layout.addWidget(self.danger_section)
 
-        root.addWidget(self._build_line_card())
+        layout.addStretch(1)
+        scroll.setWidget(container)
+        self._set_detail_enabled(False)
+        return scroll
 
-        if self.edge is not None:
-            root.addWidget(self._build_pairing_card())
-
-    def _build_line_card(self) -> QWidget:
-        frame, layout = card("Live line monitoring")
+    def _build_line_section(self) -> QWidget:
+        section = CollapsibleSection("Line monitoring", expanded=False)
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Inspect every"))
         self.interval_spin = QDoubleSpinBox()
@@ -289,7 +462,7 @@ class CamerasPage(QWidget):
         self.interval_spin.setValue(2.0)
         self.interval_spin.setSuffix(" s")
         controls.addWidget(self.interval_spin)
-        controls.addWidget(QLabel("per camera"))
+        controls.addWidget(QLabel("per local camera"))
 
         self.line_start = QPushButton("Start line")
         self.line_start.setObjectName("Primary")
@@ -301,16 +474,261 @@ class CamerasPage(QWidget):
         self.line_stop.clicked.connect(self._stop_line)
         controls.addWidget(self.line_stop)
         controls.addStretch(1)
-        layout.addLayout(controls)
+        section.body_layout.addLayout(controls)
 
         self.line_grid = QGridLayout()
-        layout.addLayout(self.line_grid)
+        section.body_layout.addLayout(self.line_grid)
+
         self.line_status = muted(
-            "Register cameras above, then start the line. Every sampled frame "
+            "Add local cameras above, then start the line. Every sampled frame "
             "is inspected locally and logged."
         )
-        layout.addWidget(self.line_status)
-        return frame
+        section.body_layout.addWidget(self.line_status)
+        return section
+
+    # ------------------------------------------------------------------ data
+
+    def _load(self) -> None:
+        try:
+            self.cameras = (
+                self.auth.client.table("cameras")
+                .select("*")
+                .order("created_at")
+                .execute()
+                .data
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Cloud unavailable",
+                                f"Could not load cameras: {exc}")
+            self.cameras = []
+        self._render_list()
+        if self.line_workers:
+            self._stop_line()
+        self._rebuild_line_tiles()
+
+    def _lookups(self) -> tuple[list[dict], list[dict]]:
+        try:
+            lines = self.auth.client.table("lines").select("id,name").execute().data
+            products = self.auth.client.table("products").select("id,name").execute().data
+        except Exception:  # noqa: BLE001
+            lines, products = [], []
+        return lines, products
+
+    def _render_list(self) -> None:
+        lines, products = self._lookups()
+        self._line_names = {line["id"]: line["name"] for line in lines}
+        self._product_names = {product["id"]: product["name"] for product in products}
+
+        previous = self._selected()
+        previous_id = previous["id"] if previous else None
+
+        self.list.blockSignals(True)
+        self.list.clear()
+        for camera in self.cameras:
+            kind = KIND_LABELS.get(camera["kind"], camera["kind"])
+            item = QListWidgetItem(f"{camera['name']}\n{kind} · {camera['address']}")
+            item.setData(Qt.ItemDataRole.UserRole, camera["id"])
+            self.list.addItem(item)
+        self.list.blockSignals(False)
+
+        if self.list.count():
+            row = 0
+            if previous_id:
+                for index in range(self.list.count()):
+                    if (self.list.item(index).data(Qt.ItemDataRole.UserRole)
+                            == previous_id):
+                        row = index
+                        break
+            self.list.setCurrentRow(row)
+        else:
+            self._selection_changed()
+        self.list_hint.setVisible(not self.cameras)
+
+    def _selected(self) -> dict | None:
+        item = self.list.currentItem()
+        if item is None:
+            return None
+        camera_id = item.data(Qt.ItemDataRole.UserRole)
+        return next(
+            (camera for camera in self.cameras if camera["id"] == camera_id),
+            None,
+        )
+
+    def _set_detail_enabled(self, enabled: bool) -> None:
+        for button in (self.edit_button, self.assign_button,
+                       self.preview_button, self.delete_button):
+            button.setEnabled(enabled)
+
+    def _selection_changed(self) -> None:
+        camera = self._selected()
+        if camera is None:
+            for label in self.overview_labels.values():
+                label.setText("—")
+            self.model_label.setText("Active model")
+            self.preview_status.setText("Select a camera and press Preview.")
+            self.preview_label.clear()
+            self.preview_label.setText("Preview appears here")
+            self._stop_preview()
+            self._set_detail_enabled(False)
+            return
+
+        self._set_detail_enabled(True)
+        self.overview_labels["Type"].setText(
+            KIND_LABELS.get(camera["kind"], camera["kind"])
+        )
+        self.overview_labels["Address"].setText(camera["address"])
+        self.overview_labels["Line"].setText(
+            self._line_names.get(camera.get("line_id"), "—")
+        )
+        self.overview_labels["Product"].setText(
+            self._product_names.get(camera.get("product_id"), "—")
+        )
+
+        assignment = db.get_camera_model(camera["id"])
+        version = assignment.get("model_version") if assignment else None
+        self.model_label.setText(
+            self.model_store.model_name(version) if version else "Active model"
+        )
+
+        mobile = camera["kind"] == "mobile"
+        self.preview_button.setEnabled(not mobile)
+        self.preview_section.set_expanded(not mobile)
+        if mobile:
+            self.preview_status.setText(
+                "This camera streams through the phone app — watch it on the "
+                "Multi-camera page."
+            )
+        else:
+            self.preview_status.setText(
+                f"{camera['name']} · {camera['kind']} · {camera['address']}"
+            )
+
+    # --------------------------------------------------------------- actions
+
+    def _add_camera(self) -> None:
+        lines, products = self._lookups()
+        dialog = CameraWizard(lines, products, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.payload()
+        payload["org_id"] = self.org.org_id
+        try:
+            self.auth.client.table("cameras").insert(payload).execute()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not save", str(exc))
+            return
+        self.status_bar.showMessage(f"Camera '{payload['name']}' added", 4000)
+        self._load()
+
+    def _edit_camera(self) -> None:
+        camera = self._selected()
+        if not camera:
+            return
+        lines, products = self._lookups()
+        dialog = CameraWizard(lines, products, camera=camera, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.payload()
+        try:
+            self.auth.client.table("cameras").update(payload).eq(
+                "id", camera["id"]
+            ).execute()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not save", str(exc))
+            return
+        self._load()
+
+    def _assign_model(self) -> None:
+        camera = self._selected()
+        if not camera:
+            return
+        models = db.get_all_models()
+        if not models:
+            QMessageBox.information(
+                self, "No models",
+                "Train a model on the Train page first.",
+            )
+            return
+        labels = ["Active model"] + [
+            f"{m.get('name') or m['version']} ({m['version']})"
+            for m in models
+        ]
+        choice, ok = QInputDialog.getItem(
+            self, "Assign model", f"Model for '{camera['name']}':",
+            labels, 0, False,
+        )
+        if not ok:
+            return
+        index = labels.index(choice)
+        version = None if index == 0 else models[index - 1]["version"]
+        db.set_camera_model(camera["id"], version)
+        self._selection_changed()
+        self.status_bar.showMessage(f"{camera['name']} now uses {choice}", 4000)
+
+    def _delete_camera(self) -> None:
+        camera = self._selected()
+        if not camera:
+            return
+        confirm = QMessageBox.question(
+            self, "Delete camera",
+            f"Delete '{camera['name']}'? Past inspections are kept.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.auth.client.table("cameras").delete().eq(
+                "id", camera["id"]
+            ).execute()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not delete", str(exc))
+            return
+        self._load()
+
+    # ---------------------------------------------------------------- phone
+
+    def _connect_phone(self) -> None:
+        dialog = PhonePairDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        url, token, name = dialog.values()
+        settings = QSettings("VisionQC", "Desktop")
+        settings.setValue("relay/url", url)
+        settings.setValue("relay/token", token)
+
+        client = ServerClient()
+        client.configure(url, token)
+        worker = FunctionWorker(client.start_pairing, name)
+        worker.finished_ok.connect(
+            lambda result, url=url: self._pairing_started(url, result)
+        )
+        worker.failed.connect(self._pairing_failed)
+        self._worker = worker
+        worker.start()
+        self.status_bar.showMessage("Creating pairing code…", 3000)
+
+    def _pairing_started(self, url: str, result: dict) -> None:
+        dialog = PairingDialog(
+            health_url=url,
+            camera_id=result["camera_id"],
+            server_ws=relay_ws_url(url),
+            token=result["token"],
+            expires_in=int(result.get("expires_in", 600)),
+            parent=self,
+        )
+        dialog.exec()
+        self.status_bar.showMessage(
+            f"“{result.get('name', 'Camera')}” pairs with the phone app", 5000
+        )
+
+    def _pairing_failed(self, trace: str) -> None:
+        last = trace.strip().splitlines()[-1] if trace.strip() else "unknown error"
+        QMessageBox.warning(
+            self, "Pairing failed",
+            "The relay server could not be reached or rejected the request.\n\n"
+            f"{last}",
+        )
+
+    # ------------------------------------------------------------------ line
 
     def _rebuild_line_tiles(self) -> None:
         while self.line_grid.count():
@@ -406,225 +824,18 @@ class CamerasPage(QWidget):
             tile["verdict"].setStyleSheet("color: #dc2626;")
         self.line_status.setText(f"Camera error: {message[:120]}")
 
-    def _build_pairing_card(self) -> QWidget:
-        frame, layout = card("Mobile pairing")
-        row = QHBoxLayout()
-        row.setSpacing(16)
-
-        info = QVBoxLayout()
-        self.edge_url_label = muted("")
-        info.addWidget(self.edge_url_label)
-
-        code_label = QLabel("Pairing code")
-        code_label.setObjectName("Muted")
-        info.addWidget(code_label)
-        self.code_value = QLabel(self.edge.pairing_code)
-        self.code_value.setStyleSheet(
-            "font-size: 30px; font-weight: 700; letter-spacing: 6px;"
-        )
-        info.addWidget(self.code_value)
-
-        info.addWidget(muted(
-            "On the phone app: sign in, choose 'Pair with edge', then scan the "
-            "QR or enter the address and code. Only devices on this network "
-            "can pair. Frames are analysed on this machine and never leave it."
-        ))
-
-        devices_row = QHBoxLayout()
-        self.devices_label = muted("No devices paired yet.")
-        devices_row.addWidget(self.devices_label, 1)
-        refresh = QPushButton("Refresh devices")
-        refresh.clicked.connect(self._refresh_devices)
-        devices_row.addWidget(refresh)
-        info.addLayout(devices_row)
-        info.addStretch(1)
-        row.addLayout(info, 1)
-
-        self.qr_label = QLabel("")
-        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignTop)
-        row.addWidget(self.qr_label)
-        layout.addLayout(row)
-
-        self.edge_url_label.setText(f"Edge address: {self.edge.base_url}")
-        payload = (
-            f'{{"host": "{self.edge.base_url}", "code": "{self.edge.pairing_code}", '
-            f'"name": "{socket.gethostname()}"}}'
-        )
-        self.qr_label.setPixmap(_qr_pixmap(payload, 170))
-        self._refresh_devices()
-        return frame
-
-    def _refresh_devices(self) -> None:
-        if self.edge is None:
-            return
-        devices = list(self.edge.tokens.values())
-        if not devices:
-            self.devices_label.setText("No devices paired yet.")
-            return
-        names = ", ".join(device["name"] for device in devices)
-        self.devices_label.setText(f"Paired: {names}")
-
-    # ------------------------------------------------------------------ data
-
-    def _load(self) -> None:
-        try:
-            self.cameras = (
-                self.auth.client.table("cameras")
-                .select("*")
-                .order("created_at")
-                .execute()
-                .data
-            )
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Cloud unavailable",
-                                f"Could not load cameras: {exc}")
-            self.cameras = []
-        self._render_table()
-        if self.line_workers:
-            self._stop_line()
-        self._rebuild_line_tiles()
-
-    def _lookups(self) -> tuple[list[dict], list[dict]]:
-        try:
-            lines = self.auth.client.table("lines").select("id,name").execute().data
-            products = self.auth.client.table("products").select("id,name").execute().data
-        except Exception:  # noqa: BLE001
-            lines, products = [], []
-        return lines, products
-
-    def _render_table(self) -> None:
-        line_names = {line["id"]: line["name"] for line in self._lookups()[0]}
-        product_names = {p["id"]: p["name"] for p in self._lookups()[1]}
-        self.table.setRowCount(len(self.cameras))
-        for row, camera in enumerate(self.cameras):
-            assignment = db.get_camera_model(camera["id"])
-            version = assignment.get("model_version") if assignment else None
-            model_label = (
-                self.model_store.model_name(version) if version
-                else "Active model"
-            )
-            values = [
-                camera["name"],
-                camera["kind"],
-                camera["address"],
-                line_names.get(camera.get("line_id"), "—"),
-                product_names.get(camera.get("product_id"), "—"),
-                model_label,
-            ]
-            for col, text in enumerate(values):
-                self.table.setItem(row, col, QTableWidgetItem(text))
-        self.table.resizeColumnsToContents()
-
-    def _selected(self) -> dict | None:
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        return self.cameras[rows[0].row()]
-
-    def _selection_changed(self) -> None:
-        camera = self._selected()
-        if camera:
-            self.preview_status.setText(
-                f"{camera['name']} · {camera['kind']} · {camera['address']}"
-            )
-
-    # --------------------------------------------------------------- actions
-
-    def _add_camera(self) -> None:
-        lines, products = self._lookups()
-        dialog = CameraDialog(lines, products, parent=self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        payload = dialog.payload()
-        if not payload["name"]:
-            QMessageBox.warning(self, "Name required", "Give the camera a name.")
-            return
-        payload["org_id"] = self.org.org_id
-        try:
-            self.auth.client.table("cameras").insert(payload).execute()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Could not save", str(exc))
-            return
-        self.status_bar.showMessage(f"Camera '{payload['name']}' added", 4000)
-        self._load()
-
-    def _edit_camera(self) -> None:
-        camera = self._selected()
-        if not camera:
-            return
-        lines, products = self._lookups()
-        dialog = CameraDialog(lines, products, camera=camera, parent=self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        payload = dialog.payload()
-        try:
-            self.auth.client.table("cameras").update(payload).eq(
-                "id", camera["id"]
-            ).execute()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Could not save", str(exc))
-            return
-        self._load()
-
-    def _assign_model(self) -> None:
-        camera = self._selected()
-        if not camera:
-            QMessageBox.information(self, "Select a camera",
-                                    "Choose a camera in the table first.")
-            return
-        models = db.get_all_models()
-        if not models:
-            QMessageBox.information(
-                self, "No models",
-                "Train a model on the Train page first.",
-            )
-            return
-        labels = ["Active model"] + [
-            f"{m.get('name') or m['version']} ({m['version']})"
-            for m in models
-        ]
-        choice, ok = QInputDialog.getItem(
-            self, "Assign model", f"Model for '{camera['name']}':",
-            labels, 0, False,
-        )
-        if not ok:
-            return
-        index = labels.index(choice)
-        version = None if index == 0 else models[index - 1]["version"]
-        db.set_camera_model(camera["id"], version)
-        self._render_table()
-        self.status_bar.showMessage(f"{camera['name']} now uses {choice}", 4000)
-
-    def _delete_camera(self) -> None:
-        camera = self._selected()
-        if not camera:
-            return
-        confirm = QMessageBox.question(
-            self, "Delete camera",
-            f"Delete '{camera['name']}'? Past inspections are kept.",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            self.auth.client.table("cameras").delete().eq("id", camera["id"]).execute()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Could not delete", str(exc))
-            return
-        self._load()
-
     # --------------------------------------------------------------- preview
 
     def _start_preview(self) -> None:
         camera = self._selected()
         if not camera:
             QMessageBox.information(self, "Select a camera",
-                                    "Choose a camera in the table first.")
+                                    "Choose a camera in the list first.")
             return
         if camera["kind"] == "mobile":
             self.preview_status.setText(
-                "Mobile cameras stream from the phone app — live view and "
-                "inspection happen on the phone; frames reach this machine "
-                "through the edge server."
+                "This camera streams through the phone app — watch it on the "
+                "Multi-camera page."
             )
             return
         self._stop_preview()
@@ -635,6 +846,8 @@ class CamerasPage(QWidget):
                 self._on_stream_error(kind, address)
         )
         self.stream.start()
+        self.preview_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
         self.preview_status.setText(f"Connecting to {camera['address']}…")
 
     def _on_frame(self, frame) -> None:
@@ -652,7 +865,13 @@ class CamerasPage(QWidget):
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
-        self.preview_status.setText("Preview stopped.")
+        camera = self._selected()
+        self.preview_button.setEnabled(
+            camera is not None and camera["kind"] != "mobile"
+        )
+        self.stop_button.setEnabled(False)
+        if camera is not None and camera["kind"] != "mobile":
+            self.preview_status.setText("Preview stopped.")
 
     def on_leave(self) -> None:
         """Stop all live capture before the page is hidden or destroyed."""

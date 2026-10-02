@@ -150,6 +150,15 @@ class ServerClient(QObject):
         response.raise_for_status()
         return response.json()
 
+    def start_pairing(self, name: str) -> dict[str, Any]:
+        """Register a camera and get a single-use token for its QR code."""
+        response = httpx.post(
+            f"{self.base_url}/pairing/start",
+            json={"name": name}, headers=self._headers(), timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def list_models(self) -> list[dict[str, Any]]:
         response = httpx.get(f"{self.base_url}/models", headers=self._headers(),
                              timeout=10)

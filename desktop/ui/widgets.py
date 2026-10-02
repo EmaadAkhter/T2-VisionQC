@@ -15,6 +15,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
+    QPushButton,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -115,6 +116,50 @@ def status_dot(color: str) -> QLabel:
     dot.setFixedSize(8, 8)
     dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
     return dot
+
+
+class CollapsibleSection(QFrame):
+    """A card section that expands one block of details at a time.
+
+    Pages with lots of camera fields use this so the operator sees one step
+    at a time instead of every control at once.
+    """
+
+    def __init__(self, title: str, expanded: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+        self._title = title
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(theme.CARD_PADDING, theme.SPACE_S,
+                                 theme.CARD_PADDING, theme.SPACE_S)
+        outer.setSpacing(theme.SPACE_S)
+
+        self._header = QPushButton(title)
+        self._header.setObjectName("SectionToggle")
+        self._header.setCheckable(True)
+        self._header.setChecked(expanded)
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header.clicked.connect(self._apply_state)
+        outer.addWidget(self._header)
+
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(theme.SPACE_S)
+        outer.addWidget(self.body)
+
+        self._apply_state()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._header.setChecked(expanded)
+        self._apply_state()
+
+    def _apply_state(self) -> None:
+        expanded = self._header.isChecked()
+        arrow = "▾  " if expanded else "▸  "
+        self._header.setText(arrow + self._title)
+        self.body.setVisible(expanded)
 
 
 # ---------------------------------------------------------------------------

@@ -85,6 +85,9 @@ QPushButton#Primary {{ background: {TEXT}; color: {BG}; border-color: {TEXT}; fo
 QPushButton#Primary:disabled {{ background: {SEAM}; color: {MUTED}; border-color: {SEAM}; }}
 QPushButton#Pass {{ border-color: {PASS}; color: {PASS}; }}
 QPushButton#Reject, QPushButton#Danger {{ border-color: {FAIL}; color: {FAIL}; }}
+QPushButton#SectionToggle {{ text-align: left; border: none; background: transparent;
+  color: {MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 2px; padding: 2px 0; }}
+QPushButton#SectionToggle:hover {{ color: {TEXT}; }}
 QPushButton#Nav {{ text-align: left; border: none; border-left: 3px solid transparent; border-radius: 0;
   background: transparent; color: {SIDEBAR_TEXT}; padding: 10px 14px; }}
 QPushButton#Nav:hover {{ background: {SURFACE}; color: {TEXT}; }}
@@ -102,6 +105,10 @@ QCheckBox {{ spacing: 8px; }}
 QTableWidget {{ background: {SURFACE}; alternate-background-color: {BG}; border: none; gridline-color: transparent; }}
 QTableWidget::item {{ padding: 6px 8px; }}
 QTableWidget::item:selected {{ background: {BG}; color: {TEXT}; }}
+QListWidget {{ background: {SURFACE}; border: none; outline: none; }}
+QListWidget::item {{ padding: 8px; border-radius: {RADIUS_CONTROL}px; }}
+QListWidget::item:hover {{ background: {BG}; }}
+QListWidget::item:selected {{ background: {BG}; color: {TEXT}; }}
 QHeaderView::section {{ background: {SURFACE}; color: {MUTED}; border: none;
   border-bottom: 1px solid {SEAM}; padding: 6px; font-size: 11px; }}
 QProgressBar {{ border: 1px solid {SEAM}; border-radius: {RADIUS_CONTROL}px;

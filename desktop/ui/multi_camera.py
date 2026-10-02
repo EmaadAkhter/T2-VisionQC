@@ -11,7 +11,7 @@ import os
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -30,6 +30,7 @@ from desktop import theme
 from desktop.auth import AuthService, OrgContext
 from desktop.model_store import ModelStore
 from desktop.server_client import ServerClient
+from desktop.ui.pairing import POPULAR_RELAY_URL, PairingDialog, relay_ws_url
 from desktop.ui.widgets import (
     bgr_to_pixmap,
     card,
@@ -134,17 +135,21 @@ class MultiCameraPage(QWidget):
 
         root.addWidget(page_header(
             "Multi-camera",
-            "Phones and edge cameras stream to the relay server; assign a "
-            "model per camera. Click a tile to select it.",
+            "Phones connect with a QR scan; assign a model per camera. "
+            "Click a tile to select it.",
         ))
 
+        settings = QSettings("VisionQC", "Desktop")
         connection, connection_layout = card("Relay server")
         row = QHBoxLayout()
         row.setSpacing(theme.SPACE_S)
-        self.url_input = QLineEdit()
+        self.url_input = QLineEdit(
+            str(settings.value("relay/url", POPULAR_RELAY_URL)
+                or POPULAR_RELAY_URL)
+        )
         self.url_input.setPlaceholderText("https://qc.example.com")
         row.addWidget(self.url_input, 2)
-        self.token_input = QLineEdit()
+        self.token_input = QLineEdit(str(settings.value("relay/token", "") or ""))
         self.token_input.setPlaceholderText("Dashboard token")
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
         row.addWidget(self.token_input, 1)
@@ -153,23 +158,34 @@ class MultiCameraPage(QWidget):
         self.connect_button.setObjectName("Primary")
         self.connect_button.clicked.connect(self._toggle_connection)
         row.addWidget(self.connect_button)
-
-        register = QPushButton("Register camera…")
-        register.clicked.connect(self._register_camera)
-        row.addWidget(register)
-
-        upload = QPushButton("Upload active model…")
-        upload.clicked.connect(self._upload_active_model)
-        row.addWidget(upload)
-
-        assign = QPushButton("Assign model…")
-        assign.clicked.connect(self._assign_model)
-        row.addWidget(assign)
         connection_layout.addLayout(row)
 
         self.status = muted("Not connected.")
         connection_layout.addWidget(self.status)
         root.addWidget(connection)
+
+        self.actions_card, actions_layout = card("Cameras")
+        actions = QHBoxLayout()
+        actions.setSpacing(theme.SPACE_S)
+        register = QPushButton("Connect phone…")
+        register.setObjectName("Primary")
+        register.clicked.connect(self._register_camera)
+        actions.addWidget(register)
+
+        upload = QPushButton("Upload active model…")
+        upload.clicked.connect(self._upload_active_model)
+        actions.addWidget(upload)
+
+        assign = QPushButton("Assign model…")
+        assign.clicked.connect(self._assign_model)
+        actions.addWidget(assign)
+        actions.addStretch(1)
+        actions_layout.addLayout(actions)
+        actions_layout.addWidget(muted(
+            "Connect the relay first; then pair a phone or manage models."
+        ))
+        self.actions_card.setVisible(False)
+        root.addWidget(self.actions_card)
 
         grid_card, grid_layout = card("Camera grid")
         grid = QGridLayout()
@@ -189,6 +205,7 @@ class MultiCameraPage(QWidget):
             self.client.stop()
             self._set_status("Disconnected.")
             self.connect_button.setText("Connect")
+            self.actions_card.setVisible(False)
             return
         url = self.url_input.text().strip()
         token = self.token_input.text().strip()
@@ -202,15 +219,21 @@ class MultiCameraPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Could not connect", str(exc))
             return
+        settings = QSettings("VisionQC", "Desktop")
+        settings.setValue("relay/url", url)
+        settings.setValue("relay/token", token)
         self.connect_button.setText("Disconnect")
         self._set_status("Connecting…")
 
     def _on_connected(self) -> None:
         self._set_status("Connected.")
+        self.actions_card.setVisible(True)
         self._refresh_cameras()
 
     def _on_disconnected(self, reason: str) -> None:
         self._set_status(f"Connection problem: {reason}")
+        if not self.client.running:
+            self.actions_card.setVisible(False)
 
     def on_leave(self) -> None:
         if self.client.running:
@@ -242,22 +265,24 @@ class MultiCameraPage(QWidget):
                 return
 
     def _register_camera(self) -> None:
-        name, ok = QInputDialog.getText(self, "Register camera",
+        name, ok = QInputDialog.getText(self, "Connect a phone",
                                         "Camera name:")
         if not ok or not name.strip():
             return
-        self._run_rest(self.client.register_camera, name.strip(),
-                       ok=lambda result: self._camera_registered(result),
-                       label="Register camera")
+        self._run_rest(self.client.start_pairing, name.strip(),
+                       ok=self._pairing_started,
+                       label="Create pairing code")
 
-    def _camera_registered(self, result: dict) -> None:
-        QMessageBox.information(
-            self, "Camera registered",
-            "Camera created.\n\n"
-            f"Camera id: {result['camera_id']}\n"
-            f"API key: {result['api_key']}\n\n"
-            "Enter these in the phone app, or use its in-app registration.",
+    def _pairing_started(self, result: dict) -> None:
+        dialog = PairingDialog(
+            health_url=self.client.base_url,
+            camera_id=result["camera_id"],
+            server_ws=relay_ws_url(self.client.base_url),
+            token=result["token"],
+            expires_in=int(result.get("expires_in", 600)),
+            parent=self,
         )
+        dialog.exec()
         self._refresh_cameras()
 
     # ----------------------------------------------------------------- models

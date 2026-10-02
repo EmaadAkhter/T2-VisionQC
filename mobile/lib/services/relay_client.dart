@@ -50,6 +50,46 @@ class RelayClient {
     );
   }
 
+  /// `wss://host` -> `https://host` for REST calls (and ws/http accepted).
+  static String httpBaseUrl(String serverUrl) {
+    var base = serverUrl.trim();
+    if (base.startsWith('wss://')) {
+      base = 'https://${base.substring('wss://'.length)}';
+    } else if (base.startsWith('ws://')) {
+      base = 'http://${base.substring('ws://'.length)}';
+    }
+    while (base.endsWith('/')) {
+      base = base.substring(0, base.length - 1);
+    }
+    return base;
+  }
+
+  /// Exchange a QR pairing token for camera credentials (single use).
+  static Future<Map<String, dynamic>> claimPairing(
+    String serverUrl,
+    String token,
+  ) async {
+    const timeout = Duration(seconds: 12);
+    final http = HttpClient();
+    try {
+      final request = await http
+          .postUrl(Uri.parse('${httpBaseUrl(serverUrl)}/pairing/claim'))
+          .timeout(timeout);
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({'token': token}));
+      final response = await request.close().timeout(timeout);
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != 200) {
+        throw const RelayException(
+          'Pairing code rejected — ask the desktop for a fresh QR code.',
+        );
+      }
+      return jsonDecode(body) as Map<String, dynamic>;
+    } finally {
+      http.close(force: true);
+    }
+  }
+
   Future<void> connect({
     Duration timeout = const Duration(seconds: 12),
   }) async {

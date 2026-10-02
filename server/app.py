@@ -87,6 +87,14 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pairing_tokens (
+                token TEXT PRIMARY KEY,
+                camera_id TEXT NOT NULL,
+                expires_at REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
 
 
 def _now() -> str:
@@ -102,6 +110,39 @@ def register_camera(name: str) -> dict[str, Any]:
             (camera_id, name[:80] or "camera", api_key, _now()),
         )
     return {"camera_id": camera_id, "api_key": api_key, "name": name}
+
+
+PAIRING_TTL_S = float(os.environ.get("VISIONQC_PAIRING_TTL", "600"))
+
+
+def create_pairing(camera_id: str, ttl_s: float | None = None) -> dict[str, Any]:
+    """Mint a short-lived, single-use pairing token for a camera."""
+    token = f"pair_{secrets.token_urlsafe(18)}"
+    expires_at = time.time() + (PAIRING_TTL_S if ttl_s is None else ttl_s)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO pairing_tokens (token, camera_id, expires_at, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (token, camera_id, expires_at, _now()),
+        )
+    return {"token": token, "expires_at": expires_at}
+
+
+def claim_pairing(token: str) -> Optional[dict[str, Any]]:
+    """Consume a pairing token and return the camera, or None if unusable."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM pairing_tokens WHERE token = ?", (token,)
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM pairing_tokens WHERE token = ?", (token,))
+        if row["expires_at"] < time.time():
+            return None
+        camera = conn.execute(
+            "SELECT * FROM cameras WHERE id = ?", (row["camera_id"],)
+        ).fetchone()
+        return dict(camera) if camera else None
 
 
 def get_camera(camera_id: str) -> Optional[dict[str, Any]]:
@@ -302,6 +343,46 @@ async def cameras_register(body: dict[str, Any],
 def cameras_list(x_dashboard_token: str = Header(default="")) -> dict[str, Any]:
     _require_dashboard(x_dashboard_token)
     return {"cameras": list_cameras()}
+
+
+# -- phone pairing ----------------------------------------------------------
+
+@app.post("/pairing/start")
+async def pairing_start(body: dict[str, Any],
+                        x_dashboard_token: str = Header(default="")) -> dict[str, Any]:
+    """Register a camera and mint a single-use pairing token for its QR code.
+
+    The QR only ever carries this token, never the camera API key.
+    """
+    _require_dashboard(x_dashboard_token)
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Camera name required")
+    camera = register_camera(name)
+    pairing = create_pairing(camera["camera_id"])
+    return {
+        "camera_id": camera["camera_id"],
+        "name": camera["name"],
+        "token": pairing["token"],
+        "expires_in": max(0, int(pairing["expires_at"] - time.time())),
+    }
+
+
+@app.post("/pairing/claim")
+async def pairing_claim(body: dict[str, Any]) -> dict[str, Any]:
+    """Exchange a pairing token for the camera credentials (single use)."""
+    token = str(body.get("token", "")).strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Pairing token required")
+    camera = claim_pairing(token)
+    if camera is None:
+        raise HTTPException(status_code=404,
+                            detail="Invalid or expired pairing code")
+    return {
+        "camera_id": camera["id"],
+        "api_key": camera["api_key"],
+        "name": camera["name"],
+    }
 
 
 @app.post("/cameras/{camera_id}/model")

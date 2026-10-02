@@ -68,7 +68,10 @@ class _RelayStreamScreenState extends State<RelayStreamScreen> {
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await controller.initialize();
+      if (!mounted) return;
       setState(() => _controller = controller);
+      // Scanned from a pairing QR: go live without another tap.
+      await _toggleStreaming();
     } catch (error) {
       setState(() => _error = 'Camera error: $error');
     }
