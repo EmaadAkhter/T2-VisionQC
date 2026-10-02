@@ -62,14 +62,18 @@ def sync_inspections(auth: AuthService, org_id: str) -> dict:
 
 
 class KpiPage(QWidget):
-    def __init__(self, auth: AuthService, org: OrgContext):
+    def __init__(self, auth: AuthService, org: OrgContext, sync_engine=None):
         super().__init__()
         self.auth = auth
         self.org = org
+        self.sync_engine = sync_engine
         self.worker: FunctionWorker | None = None
 
         self._build_ui()
         self.refresh()
+        if sync_engine is not None:
+            sync_engine.progress.connect(self._on_engine_progress)
+            sync_engine.state_changed.connect(self._on_engine_state)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -171,12 +175,38 @@ class KpiPage(QWidget):
     # ------------------------------------------------------------------ sync
 
     def _sync(self) -> None:
+        if self.sync_engine is not None:
+            self.sync_status.setText("Sync requested…")
+            self.sync_engine.sync_now()
+            return
         self.sync_button.setEnabled(False)
         self.sync_status.setText("Syncing…")
         self.worker = FunctionWorker(sync_inspections, self.auth, self.org.org_id)
         self.worker.finished_ok.connect(self._sync_done)
         self.worker.failed.connect(self._sync_failed)
         self.worker.start()
+
+    def _on_engine_state(self, state: str) -> None:
+        labels = {
+            "idle": "All synced",
+            "syncing": "Syncing…",
+            "offline": "Cloud offline — will retry automatically",
+            "error": "Sync error — will retry automatically",
+        }
+        self.sync_status.setText(labels.get(state, state))
+
+    def _on_engine_progress(self, info: dict) -> None:
+        remaining = info.get("remaining", 0)
+        pushed = info.get("pushed", 0)
+        retrying = info.get("retrying", 0)
+        if info.get("error"):
+            self.sync_status.setText(f"Sync error: {info['error'][:80]}")
+        else:
+            self.sync_status.setText(
+                f"Pushed {pushed} · {remaining} remaining"
+                + (f" · {retrying} retrying" if retrying else "")
+            )
+        self.refresh()
 
     def _sync_done(self, result: dict) -> None:
         self.sync_button.setEnabled(True)

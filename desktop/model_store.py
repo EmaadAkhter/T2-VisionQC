@@ -10,6 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import paths
 from db import database as db
 from service.inference import (
     PatchCoreModel,
@@ -19,10 +20,6 @@ from service.inference import (
     create_overlay,
     generate_explanation,
 )
-
-ROOT = Path(__file__).resolve().parents[1]
-IMAGES_DIR = ROOT / "data" / "images"
-MODELS_DIR = ROOT / "data" / "models"
 
 
 class ModelStore:
@@ -95,14 +92,14 @@ def run_inspection(image: np.ndarray, model: PatchCoreModel,
 
 
 def log_inspection(result: dict, image: np.ndarray, model_version: str,
-                   source: str = "edge") -> str:
+                   source: str = "edge", camera_id: str | None = None) -> str:
     """Persist one inspection locally (SQLite + image evidence)."""
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    images_dir = paths.images_dir()
     uid = db.generate_inspection_uid()
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-    image_path = IMAGES_DIR / f"{uid}_original.png"
-    overlay_path = IMAGES_DIR / f"{uid}_overlay.png"
+    image_path = images_dir / f"{uid}_original.png"
+    overlay_path = images_dir / f"{uid}_overlay.png"
     cv2.imwrite(str(image_path), image)
     cv2.imwrite(str(overlay_path),
                 cv2.cvtColor(result["overlay"], cv2.COLOR_RGB2BGR))
@@ -126,6 +123,7 @@ def log_inspection(result: dict, image: np.ndarray, model_version: str,
         overlay_path=str(overlay_path),
         latency_ms=result["latency_ms"],
         demo=0,
+        camera_id=camera_id,
     )
     if result["verdict"] in ("PASS", "FAIL"):
         db.update_disposition(row_id, result["verdict"])

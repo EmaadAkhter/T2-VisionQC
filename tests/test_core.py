@@ -182,12 +182,13 @@ class TestDatabase:
         self.test_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
         self.test_db.close()
         # Override database path
-        original_path = db.DATABASE_PATH
-        db.DATABASE_PATH = self.test_db.name
+        self._original_get_db_path = db.get_db_path
+        db.get_db_path = lambda: self.test_db.name
         db.init_db()
 
     def teardown_method(self):
         """Clean up test database."""
+        db.get_db_path = self._original_get_db_path
         os.unlink(self.test_db.name)
 
     def test_log_inspection(self):

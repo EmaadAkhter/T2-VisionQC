@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
@@ -39,11 +40,13 @@ def impact_preview(model_version: str, threshold: float, delta: float,
 
 
 class SettingsPage(QWidget):
-    def __init__(self, auth: AuthService, org: OrgContext, status_bar):
+    def __init__(self, auth: AuthService, org: OrgContext, status_bar,
+                 sync_engine=None):
         super().__init__()
         self.auth = auth
         self.org = org
         self.status_bar = status_bar
+        self.sync_engine = sync_engine
 
         self._build_ui()
         self._load()
@@ -100,6 +103,18 @@ class SettingsPage(QWidget):
         cloud_card, cloud_layout = card("Cloud")
         self.cloud_label = muted("")
         cloud_layout.addWidget(self.cloud_label)
+
+        evidence_form = QFormLayout()
+        self.evidence_combo = QComboBox()
+        self.evidence_combo.addItem("Metadata only (recommended)", "none")
+        self.evidence_combo.addItem("Overlay images", "overlay")
+        self.evidence_combo.addItem("Original + overlay images", "original+overlay")
+        evidence_form.addRow("Evidence upload", self.evidence_combo)
+        cloud_layout.addLayout(evidence_form)
+
+        save_evidence = QPushButton("Save evidence policy")
+        save_evidence.clicked.connect(self._save_evidence)
+        cloud_layout.addWidget(save_evidence)
         cloud_layout.addStretch(1)
         columns.addWidget(cloud_card, 1)
 
@@ -121,9 +136,22 @@ class SettingsPage(QWidget):
         )
         self.cloud_label.setText(
             f"Organization: {self.org.org_name} ({self.org.role})\n"
+            f"Station: {db.get_station_id()}\n"
             f"URL: {self.auth.config.get('supabase_url', '')}\n"
-            "Inspections sync when you press Sync on the KPI page."
+            "Inspections sync automatically; evidence follows the policy below."
         )
+        if self.sync_engine is not None:
+            policy = self.sync_engine.evidence_policy()
+            index = self.evidence_combo.findData(policy)
+            if index >= 0:
+                self.evidence_combo.setCurrentIndex(index)
+
+    def _save_evidence(self) -> None:
+        if self.sync_engine is None:
+            return
+        self.sync_engine.set_evidence_policy(self.evidence_combo.currentData())
+        self.status_bar.showMessage("Evidence policy saved", 4000)
+        self._load()
 
     def _preview(self) -> None:
         model_version = db.get_settings().get("active_model_version")
@@ -171,12 +199,13 @@ class SettingsPage(QWidget):
         import os
         import shutil
 
-        from desktop.model_store import IMAGES_DIR
+        import paths
 
+        images_dir = paths.images_dir()
         with db.get_connection() as conn:
             conn.execute("DELETE FROM inspections")
             conn.execute("DELETE FROM settings_history")
-        if os.path.isdir(IMAGES_DIR):
-            shutil.rmtree(IMAGES_DIR, ignore_errors=True)
+        if os.path.isdir(images_dir):
+            shutil.rmtree(images_dir, ignore_errors=True)
         self.status_bar.showMessage("Local data cleared", 4000)
         self._load()

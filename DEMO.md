@@ -33,7 +33,7 @@ same Wi-Fi as the laptop.
 | 1:40–2:40 | Inspect | Inspect a good unit → PASS, "No unusual areas found." Then a defective unit → FAIL with heatmap on the defect and a plain-language explanation. Show the REVIEW band and Accept/Reject. |
 | 2:40–3:20 | Cameras | Register a line camera, live preview. Show the **Mobile pairing** card with QR and 6-digit code. |
 | 3:20–4:10 | Phone streaming | Pair the phone, start streaming, show continuous verdicts coming back from the desktop. Note frames stay on the LAN. |
-| 4:10–4:40 | KPI + sync | Today's totals, rejection rate, pending reviews, then **Sync to cloud** — idempotent, duplicate-free. |
+| 4:10–4:40 | KPI + sync | Today's totals, rejection rate, pending reviews. Sync is automatic now — show the status bar ("all synced" / "N pending") and the evidence policy in Settings. |
 | 4:40–5:00 | Close | Runs offline, CPU-only, local data. Known limits: transparent objects need a fixed fixture; Windows build pending; generalized segmentation next. |
 
 ## Talking points

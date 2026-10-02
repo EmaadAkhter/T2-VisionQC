@@ -27,11 +27,13 @@ from desktop.worker import FunctionWorker
 
 
 class InspectPage(QWidget):
-    def __init__(self, auth: AuthService, org: OrgContext, status_bar):
+    def __init__(self, auth: AuthService, org: OrgContext, status_bar,
+                 sync_engine=None):
         super().__init__()
         self.auth = auth
         self.org = org
         self.status_bar = status_bar
+        self.sync_engine = sync_engine
         self.model_store = ModelStore()
         self.capture: cv2.VideoCapture | None = None
         self.pending_image: np.ndarray | None = None
@@ -282,6 +284,8 @@ class InspectPage(QWidget):
         uid = log_inspection(result, self.pending_image, model.model_version)
         self.last_uid = uid
         self.status_bar.showMessage(f"Logged {uid}", 4000)
+        if self.sync_engine is not None:
+            self.sync_engine.kick()
         self._refresh_recent()
 
     def _review(self, disposition: str) -> None:

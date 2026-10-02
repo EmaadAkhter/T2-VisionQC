@@ -1,0 +1,123 @@
+name: Desktop build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "service/**"
+      - "db/**"
+      - "packaging/**"
+      - "paths.py"
+      - "requirements-desktop.txt"
+      - ".github/workflows/desktop-build.yml"
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "service/**"
+      - "db/**"
+      - "packaging/**"
+      - "paths.py"
+      - "requirements-desktop.txt"
+      - ".github/workflows/desktop-build.yml"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            suffix: macos-arm64
+          - os: windows-latest
+            suffix: windows-x64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/AppData/Local/pip/Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements-desktop.txt') }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+          pip install pyinstaller==6.22.3
+
+      - name: Cache torch weights
+        uses: actions/cache@v4
+        with:
+          path: packaging/weights
+          key: torch-weights-wide-resnet50-v1
+
+      - name: Ensure bundled weights
+        shell: bash
+        run: |
+          mkdir -p packaging/weights/torch_home/hub/checkpoints
+          FILE=packaging/weights/torch_home/hub/checkpoints/wide_resnet50_2-9ba9bcbe.pth
+          if [ ! -f "$FILE" ]; then
+            curl -L --retry 3 -o "$FILE" \
+              https://download.pytorch.org/models/wide_resnet50_2-9ba9bcbe.pth
+          fi
+          ls -lh "$FILE"
+
+      - name: Build (PyInstaller onedir)
+        run: pyinstaller --clean --noconfirm packaging/visionqc.spec
+
+      - name: Smoke test (offscreen, exit code)
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN="dist/VisionQC/VisionQC.exe"
+          else
+            BIN="dist/VisionQC/VisionQC"
+          fi
+          "$BIN" --version
+          "$BIN" --smoke
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "../VisionQC-${{ matrix.suffix }}.zip" VisionQC >/dev/null
+          else
+            zip -q -r "../VisionQC-${{ matrix.suffix }}.zip" VisionQC
+          fi
+          cd ..
+          du -sh "VisionQC-${{ matrix.suffix }}.zip" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VisionQC-${{ matrix.suffix }}
+          path: VisionQC-${{ matrix.suffix }}.zip
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Attach artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+          generate_release_notes: true

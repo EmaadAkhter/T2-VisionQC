@@ -16,8 +16,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.edge_server import EdgeServer
+from desktop.sync import SyncEngine
 from desktop.theme import ACCENT, MUTED
 
 NAV_ITEMS = [
@@ -39,13 +41,16 @@ ROLE_LABELS = {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, auth: AuthService, org: OrgContext):
+    def __init__(self, auth: AuthService, org: OrgContext, smoke: bool = False):
         super().__init__()
         self.auth = auth
         self.org = org
+        self.smoke = smoke
         self.pages: dict[str, QWidget] = {}
 
-        self.setWindowTitle("VisionQC")
+        from desktop import __version__
+
+        self.setWindowTitle(f"VisionQC {__version__}")
         self.resize(1280, 820)
 
         central = QWidget()
@@ -60,8 +65,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         # Local edge server for the mobile companion (LAN only).
-        self.edge = EdgeServer(org_id=org.org_id)
-        self.edge.start()
+        if not smoke:
+            self.edge = EdgeServer(org_id=org.org_id)
+            self.edge.start()
+            self.sync_engine = SyncEngine(auth, org.org_id)
+            self.sync_engine.state_changed.connect(self._on_sync_state)
+            self.sync_engine.progress.connect(self._on_sync_progress)
+            self.sync_engine.start()
+        else:
+            self.edge = None
+            self.sync_engine = None
 
         self._build_status_bar()
         self._switch("inspect")
@@ -130,19 +143,22 @@ class MainWindow(QMainWindow):
     def _create_page(self, key: str) -> QWidget:
         if key == "inspect":
             from desktop.ui.inspect import InspectPage
-            return InspectPage(self.auth, self.org, self.statusBar())
+            return InspectPage(self.auth, self.org, self.statusBar(),
+                               sync_engine=self.sync_engine)
         if key == "train":
             from desktop.ui.train import TrainPage
             return TrainPage(self.auth, self.org, self.statusBar())
         if key == "cameras":
             from desktop.ui.cameras import CamerasPage
-            return CamerasPage(self.auth, self.org, self.statusBar(), self.edge)
+            return CamerasPage(self.auth, self.org, self.statusBar(), self.edge,
+                               smoke=self.smoke, sync_engine=self.sync_engine)
         if key == "kpi":
             from desktop.ui.kpi import KpiPage
-            return KpiPage(self.auth, self.org)
+            return KpiPage(self.auth, self.org, sync_engine=self.sync_engine)
         if key == "settings":
             from desktop.ui.settings import SettingsPage
-            return SettingsPage(self.auth, self.org, self.statusBar())
+            return SettingsPage(self.auth, self.org, self.statusBar(),
+                                sync_engine=self.sync_engine)
         raise KeyError(key)
 
     # ------------------------------------------------------------ status bar
@@ -151,15 +167,46 @@ class MainWindow(QMainWindow):
         bar = QStatusBar()
         self.setStatusBar(bar)
         self.online_label = QLabel("● offline")
-        self.sync_label = QLabel("Cloud: not synced")
+        self.sync_label = QLabel("Sync: idle")
         self.model_label = QLabel("Model: none")
         bar.addWidget(self.online_label)
         bar.addPermanentWidget(self.model_label)
         bar.addPermanentWidget(self.sync_label)
         self.refresh_model_label()
+        self._on_sync_progress({
+            "pushed": 0,
+            "remaining": db.count_unsynced_inspections(),
+            "retrying": 0,
+        })
+
+    def _on_sync_state(self, state: str) -> None:
+        colors = {
+            "idle": "#16a34a",
+            "syncing": "#2563eb",
+            "offline": "#d97706",
+            "error": "#dc2626",
+        }
+        labels = {
+            "idle": "Sync: idle",
+            "syncing": "Sync: syncing…",
+            "offline": "Sync: offline",
+            "error": "Sync: error",
+        }
+        self.sync_label.setText(labels.get(state, f"Sync: {state}"))
+        self.sync_label.setStyleSheet(
+            f"color: {colors.get(state, '#64748b')};"
+        )
+
+    def _on_sync_progress(self, info: dict) -> None:
+        remaining = info.get("remaining", 0)
+        retrying = info.get("retrying", 0)
+        if remaining == 0:
+            self.sync_label.setText("Sync: all synced")
+        else:
+            extra = f" ({retrying} retrying)" if retrying else ""
+            self.sync_label.setText(f"Sync: {remaining} pending{extra}")
 
     def refresh_model_label(self) -> None:
-        from db import database as db
         settings = db.get_settings()
         version = settings.get("active_model_version")
         self.model_label.setText(
@@ -178,5 +225,8 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        self.edge.stop()
+        if self.edge is not None:
+            self.edge.stop()
+        if self.sync_engine is not None:
+            self.sync_engine.stop()
         super().closeEvent(event)

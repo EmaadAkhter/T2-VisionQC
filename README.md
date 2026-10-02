@@ -53,6 +53,13 @@ USB / RTSP cameras ────────────────────�
 - **Edge server** (`desktop/edge_server.py`): LAN-only frame intake with
   pairing codes and device tokens. Frames are analysed on the desktop and are
   never uploaded to the cloud.
+- **Sync** (`desktop/sync.py`): automatic background push with exponential
+  backoff, station attribution (collision-safe inspection IDs), idempotent
+  upserts, disposition-update propagation and an optional evidence-upload
+  policy (metadata only by default).
+- **Packaging** (`packaging/`, `docs/PACKAGING.md`): PyInstaller onedir builds
+  for macOS (arm64) and Windows (x64) produced by GitHub Actions, with bundled
+  model weights for offline first runs.
 
 ## Run the platform locally
 
@@ -77,7 +84,12 @@ flutter build apk --debug               # output: build/app/outputs/flutter-apk/
 
 Desktop workflow: sign in → choose/create organization → **Train** on 20–30
 good images → **Inspect** with webcam/upload → **Cameras** to register line
-cameras and pair phones → **KPI** to see today's numbers and sync.
+cameras and pair phones → **KPI** to see today's numbers. Inspections sync to
+the cloud automatically (retry/backoff; evidence upload policy in Settings).
+
+Desktop packaging: builds for macOS and Windows are produced by
+`.github/workflows/desktop-build.yml`; see **[docs/PACKAGING.md](docs/PACKAGING.md)**
+for local builds, artifact installation and signing status.
 
 Mobile workflow: sign in → choose organization → enter the edge address and
 pairing code shown on the desktop Cameras page → continuous streaming with
@@ -226,9 +238,10 @@ VisionQC/
 ```bash
 pytest tests/test_core.py -v            # inference/logic unit + integration tests
 python3 tools/test_rls.py               # auth, roles, tenant isolation (needs supabase start)
-QT_QPA_PLATFORM=offscreen python3 -m desktop.smoke_test   # desktop pages construct
-cd mobile && flutter analyze && flutter test              # mobile app
-python3 tests/test_mvtec.py --all --root data/mvtec_hf    # MVTec AD benchmark
+python3 tools/test_sync.py              # sync: duplicates, retries, evidence, stations
+QT_QPA_PLATFORM=offscreen python3 -m desktop.launcher --smoke   # desktop pages construct
+cd mobile && flutter analyze && flutter test                    # mobile app
+python3 tests/test_mvtec.py --all --root data/mvtec_hf          # MVTec AD benchmark
 ```
 
 ## Configuration

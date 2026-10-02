@@ -11,13 +11,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from contextlib import contextmanager
 
-
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "visionqc.db")
+import paths
 
 
 def get_db_path() -> str:
-    """Get the database path, creating parent directories if needed."""
-    path = os.path.abspath(DATABASE_PATH)
+    """Get the database path (packaging-aware), creating parents if needed."""
+    path = str(paths.db_path())
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
 
@@ -118,20 +117,97 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_model_version ON inspections(model_version)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_demo ON inspections(demo)")
 
-        # Cloud sync flag (added after v1; safe to re-run)
-        try:
-            conn.execute("ALTER TABLE inspections ADD COLUMN synced INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
+        # Cloud sync columns (added after v1; safe to re-run)
+        _add_column(conn, "inspections", "synced", "INTEGER DEFAULT 0")
+        _add_column(conn, "inspections", "station_id", "TEXT")
+        _add_column(conn, "inspections", "camera_id", "TEXT")
+        _add_column(conn, "inspections", "local_revision", "INTEGER DEFAULT 0")
+        _add_column(conn, "inspections", "synced_revision", "INTEGER DEFAULT -1")
+        _add_column(conn, "inspections", "synced_at", "TEXT")
+        _add_column(conn, "inspections", "sync_attempts", "INTEGER DEFAULT 0")
+        _add_column(conn, "inspections", "last_sync_error", "TEXT")
+        _add_column(conn, "inspections", "next_retry_at", "TEXT")
+        _add_column(conn, "inspections", "evidence_synced", "INTEGER DEFAULT 0")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.execute("UPDATE inspections SET station_id = 'legacy' WHERE station_id IS NULL")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_synced ON inspections(synced)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_retry ON inspections(next_retry_at)")
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """Add a column if it does not exist (SQLite has no IF NOT EXISTS here)."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    except sqlite3.OperationalError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Station identity
+# ---------------------------------------------------------------------------
+
+def get_station_id() -> str:
+    """Stable per-install station id: <host>-<4 hex>. Generated once."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key = 'station_id'"
+        ).fetchone()
+        if row:
+            return row[0]
+
+    import re
+    import socket
+    import uuid
+
+    host = re.sub(r"[^a-z0-9]+", "-", socket.gethostname().lower()).strip("-")
+    host = host[:24] or "station"
+    station = f"{host}-{uuid.uuid4().hex[:4]}"
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('station_id', ?)",
+            (station,),
+        )
+    return station
+
+
+def get_station_code() -> str:
+    """Short station code used in inspection UIDs (4 chars, upper-case)."""
+    return get_station_id().rsplit("-", 1)[-1].upper()
+
+
+# ---------------------------------------------------------------------------
+# Sync helpers
+# ---------------------------------------------------------------------------
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def get_unsynced_inspections(limit: int = 500) -> List[Dict[str, Any]]:
-    """Inspections not yet pushed to the cloud."""
+    """Inspections that are new or changed since the last successful sync.
+
+    Rows waiting on a retry backoff are skipped until `next_retry_at` passes.
+    """
+    now = _utc_now_iso()
     with get_connection() as conn:
         cursor = conn.execute(
-            "SELECT * FROM inspections WHERE synced = 0 ORDER BY timestamp LIMIT ?",
-            (limit,),
+            """
+            SELECT * FROM inspections
+            WHERE (synced = 0 OR local_revision > COALESCE(synced_revision, -1))
+              AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            ORDER BY timestamp
+            LIMIT ?
+            """,
+            (now, limit),
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -143,30 +219,86 @@ def mark_inspections_synced(row_ids: List[int]) -> None:
     placeholders = ",".join("?" for _ in row_ids)
     with get_connection() as conn:
         conn.execute(
-            f"UPDATE inspections SET synced = 1 WHERE id IN ({placeholders})",
-            row_ids,
+            f"""
+            UPDATE inspections
+            SET synced = 1,
+                synced_at = ?,
+                synced_revision = local_revision,
+                sync_attempts = 0,
+                last_sync_error = NULL,
+                next_retry_at = NULL
+            WHERE id IN ({placeholders})
+            """,
+            [_utc_now_iso(), *row_ids],
+        )
+
+
+def mark_inspection_sync_failed(row_id: int, error: str,
+                                next_retry_at: str) -> None:
+    """Record a failed push attempt and schedule the retry."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE inspections
+            SET sync_attempts = sync_attempts + 1,
+                last_sync_error = ?,
+                next_retry_at = ?
+            WHERE id = ?
+            """,
+            (error[:500], next_retry_at, row_id),
         )
 
 
 def count_unsynced_inspections() -> int:
     with get_connection() as conn:
-        cursor = conn.execute("SELECT COUNT(*) FROM inspections WHERE synced = 0")
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*) FROM inspections
+            WHERE synced = 0 OR local_revision > COALESCE(synced_revision, -1)
+            """
+        )
         return cursor.fetchone()[0]
 
 
-def generate_inspection_uid() -> str:
-    """Generate a human-readable inspection ID: INS-YYYYMMDD-NNNN."""
-    from datetime import datetime
-    date_str = datetime.now().strftime("%Y%m%d")
+def count_by_sync_state() -> Dict[str, int]:
+    """Counts for the sync status UI."""
+    with get_connection() as conn:
+        pending = conn.execute(
+            """
+            SELECT COUNT(*) FROM inspections
+            WHERE (synced = 0 OR local_revision > COALESCE(synced_revision, -1))
+              AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            """,
+            (_utc_now_iso(),),
+        ).fetchone()[0]
+        retrying = conn.execute(
+            """
+            SELECT COUNT(*) FROM inspections
+            WHERE synced = 0 AND next_retry_at IS NOT NULL AND next_retry_at > ?
+            """,
+            (_utc_now_iso(),),
+        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM inspections").fetchone()[0]
+    return {
+        "pending": pending,
+        "retrying": retrying,
+        "synced": total - pending - retrying,
+        "total": total,
+    }
 
+
+def generate_inspection_uid() -> str:
+    """Human-readable inspection ID: INS-YYYYMMDD-NNNN-<station code>."""
+    from datetime import datetime
+
+    date_str = datetime.now().strftime("%Y%m%d")
     with get_connection() as conn:
         cursor = conn.execute(
             "SELECT COUNT(*) FROM inspections WHERE uid LIKE ?",
-            (f"INS-{date_str}-%",)
+            (f"INS-{date_str}-%",),
         )
         count = cursor.fetchone()[0]
-
-    return f"INS-{date_str}-{count + 1:04d}"
+    return f"INS-{date_str}-{count + 1:04d}-{get_station_code()}"
 
 
 def log_inspection(
@@ -189,6 +321,7 @@ def log_inspection(
     latency_ms: int,
     demo: int = 0,
     operator_note: Optional[str] = None,
+    camera_id: Optional[str] = None,
 ) -> int:
     """Log a single inspection. Returns the row ID."""
     with get_connection() as conn:
@@ -197,13 +330,14 @@ def log_inspection(
                 uid, timestamp, product_id, model_version, raw_score, score,
                 threshold, delta, verdict, certainty, disposition, explanation,
                 region_label, area_pct, setup_status, image_path, overlay_path,
-                latency_ms, demo, operator_note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                latency_ms, demo, operator_note, station_id, camera_id,
+                local_revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         """, (
             uid, timestamp, product_id, model_version, raw_score, score,
             threshold, delta, verdict, certainty, explanation,
             region_label, area_pct, setup_status, image_path, overlay_path,
-            latency_ms, demo, operator_note
+            latency_ms, demo, operator_note, get_station_id(), camera_id
         ))
         return cursor.lastrowid
 
@@ -214,11 +348,14 @@ def update_disposition(
     override: bool = False,
     note: Optional[str] = None,
 ):
-    """Update the final disposition of an inspection."""
+    """Update the final disposition; bumps local_revision so sync re-pushes it."""
     with get_connection() as conn:
         conn.execute("""
             UPDATE inspections
-            SET disposition = ?, disposition_by_override = ?, operator_note = COALESCE(?, operator_note)
+            SET disposition = ?,
+                disposition_by_override = ?,
+                operator_note = COALESCE(?, operator_note),
+                local_revision = local_revision + 1
             WHERE id = ?
         """, (disposition, 1 if override else 0, note, inspection_id))
 

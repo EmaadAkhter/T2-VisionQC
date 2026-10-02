@@ -9,14 +9,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from supabase import Client, create_client
 
+import paths
 from desktop.config import load_config
-
-ROOT = Path(__file__).resolve().parents[1]
-SESSION_PATH = ROOT / "data" / "desktop_session.json"
 
 
 @dataclass
@@ -48,10 +45,11 @@ class AuthService:
     # -- session persistence ------------------------------------------------
 
     def _restore_session(self) -> bool:
-        if not SESSION_PATH.exists():
+        session_path = paths.session_path()
+        if not session_path.exists():
             return False
         try:
-            tokens = json.loads(SESSION_PATH.read_text())
+            tokens = json.loads(session_path.read_text())
             self.client.auth.set_session(
                 tokens["access_token"], tokens["refresh_token"]
             )
@@ -67,8 +65,9 @@ class AuthService:
         session = self.client.auth.get_session()
         if session is None:
             return
-        SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_PATH.write_text(json.dumps({
+        session_path = paths.session_path()
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text(json.dumps({
             "access_token": session.access_token,
             "refresh_token": session.refresh_token,
         }))
@@ -76,7 +75,7 @@ class AuthService:
     def _clear_session(self) -> None:
         self.user_email = None
         self.orgs = []
-        SESSION_PATH.unlink(missing_ok=True)
+        paths.session_path().unlink(missing_ok=True)
 
     # -- auth actions -------------------------------------------------------
 

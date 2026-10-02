@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import paths
 from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.theme import MUTED
@@ -25,17 +26,14 @@ from desktop.ui.widgets import card, muted
 from desktop.worker import FunctionWorker
 from service.inference import MIN_TRAIN_IMAGES, PatchCoreModel, TARGET_TRAIN_IMAGES
 
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
-
 
 def train_model(image_paths: list[str]) -> dict:
     """Train and persist a new model version (runs on a worker thread)."""
     model = PatchCoreModel()
     stats = model.fit(image_paths)
 
-    models_dir = os.path.abspath(MODELS_DIR)
-    os.makedirs(models_dir, exist_ok=True)
-    model_path = os.path.join(models_dir, f"{model.model_version}.pt")
+    models_dir = paths.models_dir()
+    model_path = str(models_dir / f"{model.model_version}.pt")
     model.save(model_path)
 
     db.save_model_metadata(

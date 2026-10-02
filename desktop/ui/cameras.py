@@ -79,7 +79,10 @@ class LineCameraWorker(QThread):
                 settings = db.get_settings()
                 with self.inference_lock:
                     result = run_inspection(frame, model, settings)
-                    uid = log_inspection(result, frame, model.model_version)
+                    uid = log_inspection(
+                        result, frame, model.model_version,
+                        camera_id=self.camera["id"],
+                    )
                 self.result_ready.emit(self.camera["id"], frame, result, uid)
             except Exception as exc:  # noqa: BLE001
                 self.error.emit(self.camera["id"], str(exc))
@@ -204,12 +207,15 @@ class CameraDialog(QDialog):
 
 
 class CamerasPage(QWidget):
-    def __init__(self, auth: AuthService, org: OrgContext, status_bar, edge=None):
+    def __init__(self, auth: AuthService, org: OrgContext, status_bar, edge=None,
+                 smoke: bool = False, sync_engine=None):
         super().__init__()
         self.auth = auth
         self.org = org
         self.status_bar = status_bar
         self.edge = edge
+        self.smoke = smoke
+        self.sync_engine = sync_engine
         self.stream: CameraStream | None = None
         self.cameras: list[dict] = []
         self.line_workers: dict[str, LineCameraWorker] = {}
@@ -217,7 +223,10 @@ class CamerasPage(QWidget):
         self.inference_lock = threading.Lock()
 
         self._build_ui()
-        self._load()
+        if not smoke:
+            self._load()
+        else:
+            self._rebuild_line_tiles()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -403,6 +412,8 @@ class CamerasPage(QWidget):
             f"score {result['score']:.2f} · {result['latency_ms']} ms"
         )
         self.status_bar.showMessage(f"{uid} logged from line camera", 2000)
+        if self.sync_engine is not None:
+            self.sync_engine.kick()
 
     def _on_line_error(self, camera_id: str, message: str) -> None:
         tile = self.line_tiles.get(camera_id)

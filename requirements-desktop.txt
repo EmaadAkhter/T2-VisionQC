@@ -1,0 +1,25 @@
+# Desktop runtime dependencies (packaged app + CI).
+# CPU-only torch stack to keep the bundle small; the app never needs CUDA.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Native UI
+PySide6>=6.7,<7
+
+# Cloud control plane client
+supabase>=2.10,<3
+httpx>=0.27,<1
+requests>=2.31,<3
+
+# Local edge server (phone frame intake)
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+
+# Imaging and model inference
+torch>=2.6,<3
+torchvision>=0.21,<1
+numpy>=1.26,<3
+Pillow>=10,<13
+opencv-python-headless>=4.10,<5
+
+# Pairing QR codes
+qrcode>=8,<9
