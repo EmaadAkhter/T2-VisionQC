@@ -21,5 +21,8 @@ numpy>=1.26,<3
 Pillow>=10,<13
 opencv-python-headless>=4.10,<5
 
+# DINOv2 feature extractor (better generalization on small good-photo sets)
+timm>=1.0,<2
+
 # Pairing QR codes
 qrcode>=8,<9
