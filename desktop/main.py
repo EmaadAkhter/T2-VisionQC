@@ -119,6 +119,7 @@ def main() -> int:
     import paths
 
     paths.ensure_torch_home()
+    paths.ensure_model_home()
     db.init_db()
 
     config = load_config()

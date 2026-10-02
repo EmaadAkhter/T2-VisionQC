@@ -100,3 +100,43 @@ def ensure_torch_home() -> Path | None:
     if bundled is not None:
         os.environ.setdefault("TORCH_HOME", str(bundled))
     return bundled
+
+
+def bundled_hf_dir() -> Path | None:
+    """Directory containing a bundled Hugging Face cache (``hub/models--timm--*``)."""
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        candidates += [base / "hf_home", base / "weights" / "hf"]
+    repo = _repo_root()
+    if repo is not None:
+        candidates += [repo / "packaging" / "weights" / "hf"]
+    for candidate in candidates:
+        hub = candidate / "hub"
+        if hub.exists() and any(hub.glob("models--timm--*")):
+            return candidate
+    return None
+
+
+def ensure_model_home() -> Path | None:
+    """Use the bundled Hugging Face cache offline from a writable copy.
+
+    Hugging Face takes file locks inside its cache, so the read-only bundle is
+    copied once into the user data directory and the process is pinned to it.
+    """
+    bundled = bundled_hf_dir()
+    if bundled is None:
+        return None
+
+    import shutil
+
+    target = data_dir() / "hf_home"
+    marker = target / "hub" / ".staged"
+    if not marker.exists():
+        shutil.copytree(bundled / "hub", target / "hub", dirs_exist_ok=True)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("staged", encoding="utf-8")
+
+    os.environ.setdefault("HF_HOME", str(target))
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    return target

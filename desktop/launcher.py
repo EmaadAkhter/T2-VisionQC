@@ -38,6 +38,7 @@ def run_smoke() -> int:
     import paths
 
     paths.ensure_torch_home()
+    paths.ensure_model_home()
 
     from db import database as db
 
@@ -87,9 +88,11 @@ def run_selftest() -> int:
     import paths
 
     bundled = paths.ensure_torch_home()
+    paths.ensure_model_home()
     from db import database as db
 
     db.init_db()
+    from service.backbones import engine_display_name, resolve_default_engine
     from service.inference import PatchCoreModel
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -100,12 +103,14 @@ def run_selftest() -> int:
             path = Path(tmp) / f"selftest_{index}.png"
             cv2.imwrite(str(path), image)
             image_paths.append(str(path))
-        model = PatchCoreModel()
+        engine, engine_kwargs = resolve_default_engine()
+        model = PatchCoreModel(backbone=engine, backbone_kwargs=engine_kwargs)
         stats = model.fit(image_paths)
         prediction = model.predict(cv2.imread(image_paths[0]))
 
     print(
         f"selftest ok | weights={'bundled' if bundled else 'cache'} "
+        f"| engine={engine_display_name(model.backbone.config()['name'])} "
         f"| bank={stats['memory_bank_size']} "
         f"| score={prediction['normalized_score']:.3f}"
     )
@@ -125,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     import paths
 
     paths.ensure_torch_home()
+    paths.ensure_model_home()
 
     from desktop.main import main as app_main
 

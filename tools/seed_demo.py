@@ -96,7 +96,8 @@ def main():
         expl = generate_explanation(pred["anomaly_map"], T)
         certainty, _ = compute_certainty(score, verdict, T, D, setup,
                                          expl["area_pct"])
-        overlay = create_overlay(image, pred["anomaly_map"], T)
+        overlay = create_overlay(image, pred["anomaly_map"], T,
+                                 ref_score=model.ref_score)
 
         uid = db.generate_inspection_uid()
         ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

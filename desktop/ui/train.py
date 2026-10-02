@@ -28,11 +28,13 @@ from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_head
 from desktop.ui.errors import show_error
 from desktop.worker import FunctionWorker
 from service.inference import MIN_TRAIN_IMAGES, PatchCoreModel, TARGET_TRAIN_IMAGES
+from service.backbones import engine_display_name, resolve_default_engine
 
 
 def train_model(image_paths: list[str]) -> dict:
     """Train and persist a new model version (runs on a worker thread)."""
-    model = PatchCoreModel()
+    backbone, kwargs = resolve_default_engine(len(image_paths))
+    model = PatchCoreModel(backbone=backbone, backbone_kwargs=kwargs)
     stats = model.fit(image_paths)
 
     models_dir = paths.models_dir()
@@ -44,7 +46,7 @@ def train_model(image_paths: list[str]) -> dict:
         product_id="default",
         created_at=model.created_at,
         n_images=model.n_training_images,
-        backbone="WideResNet-50",
+        backbone=engine_display_name(model.backbone.config()["name"]),
         coreset_ratio=model.coreset_ratio,
         ref_score=model.ref_score,
         baseline_brightness=model.training_stats.get("mean_brightness", 0),
@@ -54,6 +56,7 @@ def train_model(image_paths: list[str]) -> dict:
     )
     db.update_settings("default", "active_model_version", model.model_version)
     stats["model_path"] = model_path
+    stats["backbone"] = engine_display_name(model.backbone.config()["name"])
     return stats
 
 

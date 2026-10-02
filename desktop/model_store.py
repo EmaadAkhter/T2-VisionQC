@@ -150,6 +150,16 @@ def run_inspection(image: np.ndarray, model: PatchCoreModel,
     explanation = generate_explanation(
         prediction["anomaly_map"], threshold, ref_score=model.ref_score
     )
+    if verdict == "REVIEW" and explanation.get("n_regions", 0) == 0:
+        # A borderline score with no single hot patch still needs a truthful
+        # message: "nothing found" would tell the operator to ignore the unit.
+        explanation = {
+            **explanation,
+            "explanation": (
+                "Differences are close to the limit. Inspect this unit before "
+                "accepting it."
+            ),
+        }
     certainty, certainty_reason = compute_certainty(
         score, verdict, threshold, delta, setup_status, explanation["area_pct"]
     )
@@ -199,7 +209,8 @@ def run_inspection(image: np.ndarray, model: PatchCoreModel,
                     "area_pct": explanation.get("area_pct", 0.0),
                 }
 
-    overlay = create_overlay(image, prediction["anomaly_map"], threshold)
+    overlay = create_overlay(image, prediction["anomaly_map"], threshold,
+                             ref_score=model.ref_score)
 
     return {
         "raw_score": prediction["raw_score"],

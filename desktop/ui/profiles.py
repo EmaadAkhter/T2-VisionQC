@@ -49,6 +49,7 @@ from service.foreground import (
     proposal_from_frames,
 )
 from service.inference import INPUT_SIZE, PatchCoreModel
+from service.backbones import engine_display_name, resolve_default_engine
 
 
 def _load_frames(folder: str, limit: int = 40) -> list[tuple[str, np.ndarray]]:
@@ -127,7 +128,8 @@ def build_profile_job(name: str, camera_id: str | None, good_paths: list[str],
     sample_path = art_dir / "sample.png"
     shutil.copyfile(good_paths[0], sample_path)
 
-    model = PatchCoreModel()
+    engine_name, engine_kwargs = resolve_default_engine(len(good_paths))
+    model = PatchCoreModel(backbone=engine_name, backbone_kwargs=engine_kwargs)
     stats = model.fit(good_paths, score_mask=mask)
     model_path = paths.models_dir() / f"{model.model_version}.pt"
     model.save(str(model_path))
@@ -136,7 +138,7 @@ def build_profile_job(name: str, camera_id: str | None, good_paths: list[str],
         product_id="default",
         created_at=model.created_at,
         n_images=model.n_training_images,
-        backbone="WideResNet-50",
+        backbone=engine_display_name(model.backbone.config()["name"]),
         coreset_ratio=model.coreset_ratio,
         ref_score=model.ref_score,
         baseline_brightness=model.training_stats.get("mean_brightness", 0),

@@ -3,26 +3,24 @@
 Pure Python module with no Streamlit dependencies.
 Handles training, inference, model save/load, and calibration.
 
-PatchCore (Roth et al., CVPR 2022) simplified for hackathon use:
-- WideResNet-50 pretrained backbone, features from layers 2 and 3
-- 3x3 local aggregation of patch features
+PatchCore (Roth et al., CVPR 2022), product-agnostic:
+- Pluggable frozen backbone (WideResNet-50 by default, DINOv2 for
+  cross-product generalization) via :mod:`service.backbones`
 - Greedy coreset subsampling of patch features
 - Nearest-neighbour search; image score = max of the patch anomaly map
 """
 
 import os
-import json
 import hashlib
 import time
-from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-import torchvision.transforms as T
-from torchvision.models import wide_resnet50_2, Wide_ResNet50_2_Weights
 import cv2
+
+from service.backbones import backbone_from_config, build_backbone
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +41,8 @@ MIN_CORESET_POINTS = 500
 MAX_CORESET_POINTS = 2000
 DEVICE = "cpu"
 RANDOM_SEED = 42
+LOO_MAX_IMAGES = 30   # leave-one-out reference calibration up to this set size
+KFOLD = 5             # cross-validation folds for larger onboarding sets
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +57,11 @@ def load_image_bgr(path: str) -> np.ndarray:
     return img
 
 
-def preprocess_image(image_bgr: np.ndarray) -> torch.Tensor:
+def preprocess_image(image_bgr: np.ndarray,
+                     size: Tuple[int, int] = INPUT_SIZE) -> torch.Tensor:
     """Convert a BGR image to a normalized (1, 3, H, W) tensor."""
     img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    img_resized = cv2.resize(img_rgb, INPUT_SIZE)
+    img_resized = cv2.resize(img_rgb, size)
     img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float() / 255.0
     mean = torch.tensor(IMAGE_MEAN).view(3, 1, 1)
     std = torch.tensor(IMAGE_STD).view(3, 1, 1)
@@ -71,15 +72,16 @@ def preprocess_image(image_bgr: np.ndarray) -> torch.Tensor:
 class ImageDataset(Dataset):
     """Dataset for loading images from disk."""
 
-    def __init__(self, image_paths: List[str]):
+    def __init__(self, image_paths: List[str], size: Tuple[int, int] = INPUT_SIZE):
         self.image_paths = image_paths
+        self.size = size
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
         image = load_image_bgr(self.image_paths[idx])
-        return preprocess_image(image).squeeze(0), self.image_paths[idx]
+        return preprocess_image(image, self.size).squeeze(0), self.image_paths[idx]
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +89,17 @@ class ImageDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 class PatchCoreModel:
-    """PatchCore anomaly detection model."""
+    """PatchCore anomaly detection model with a pluggable backbone."""
 
-    def __init__(self, coreset_ratio: float = COSET_RATIO):
+    def __init__(self, coreset_ratio: float = COSET_RATIO,
+                 backbone: str = "wide_resnet50",
+                 backbone_kwargs: Optional[Dict[str, Any]] = None):
         self.device = torch.device(DEVICE)
         self.coreset_ratio = coreset_ratio
+        self.backbone_name = backbone
+        self.backbone_kwargs = dict(backbone_kwargs or {})
+        self.backbone = build_backbone(backbone, **self.backbone_kwargs)
+        self.input_size = self.backbone.input_size
         self.memory_bank = None          # (M, C) tensor
         self.ref_score = None            # float
         self.model_version = None
@@ -99,77 +107,47 @@ class PatchCoreModel:
         self.n_training_images = 0
         self.created_at = None
         self.parent_version = None
-        self._build_backbone()
 
     # -- backbone -----------------------------------------------------------
 
-    def _build_backbone(self):
-        """Build a frozen WideResNet-50 feature extractor."""
-        weights = Wide_ResNet50_2_Weights.DEFAULT
-        model = wide_resnet50_2(weights=weights)
+    def _use_backbone_config(self, config: Optional[dict]) -> None:
+        """Rebuild the backbone from a saved config (legacy -> WideResNet)."""
+        if self.backbone.config() == config:
+            return
+        backbone = backbone_from_config(config)
+        self.backbone = backbone
+        self.backbone_name = backbone.config().get("name", "wide_resnet50")
+        self.backbone_kwargs = {
+            k: v for k, v in backbone.config().items() if k != "name"
+        }
+        self.input_size = backbone.input_size
 
-        self.conv1 = model.conv1
-        self.bn1 = model.bn1
-        self.relu = model.relu
-        self.maxpool = model.maxpool
-        self.layer1 = model.layer1
-        self.layer2 = model.layer2
-        self.layer3 = model.layer3
-
-        for module in self._modules_list():
-            module.eval()
-            for param in module.parameters():
-                param.requires_grad = False
-
-    def _modules_list(self):
-        return [self.conv1, self.bn1, self.layer1, self.layer2, self.layer3]
+    def parameters(self):
+        return self.backbone.parameters()
 
     def to(self, device):
-        for module in self._modules_list():
-            module.to(device)
+        self.backbone.to(device)
         self.device = torch.device(device)
         return self
 
     def train(self):
-        for module in self._modules_list():
-            module.train()
+        self.backbone.train()
         return self
 
     def eval(self):
-        for module in self._modules_list():
-            module.eval()
+        self.backbone.eval()
         return self
 
     def extract_features(self, images: torch.Tensor) -> torch.Tensor:
-        """Extract patch features of shape (N, C, H, W).
-
-        Concatenates layer2 features with layer3 features upsampled to the
-        layer2 resolution (28x28 for 224px input, as in the original
-        PatchCore), then applies 3x3 local aggregation.
-        """
-        with torch.no_grad():
-            x = self.conv1(images)
-            x = self.bn1(x)
-            x = self.relu(x)
-            x = self.maxpool(x)
-            x = self.layer1(x)
-            feat2 = self.layer2(x)
-            feat3 = self.layer3(feat2)
-
-            if feat3.shape[2:] != feat2.shape[2:]:
-                feat3 = F.interpolate(feat3, size=feat2.shape[2:], mode="bilinear",
-                                      align_corners=False)
-
-            features = torch.cat([feat2, feat3], dim=1)
-            features = F.avg_pool2d(features, kernel_size=3, stride=1, padding=1)
-        return features
+        """Extract patch features of shape (N, C, H, W)."""
+        return self.backbone.extract(images)
 
     # -- training -----------------------------------------------------------
 
     def _extract_features_for_paths(self, image_paths: List[str],
                                     batch_size: int = 8) -> torch.Tensor:
         """Extract features for all images; returns (N, C, H, W) on CPU."""
-        dataset = ImageDataset(image_paths)
+        dataset = ImageDataset(image_paths, size=self.input_size)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         features = []
         for batch, _ in loader:
@@ -239,6 +217,7 @@ class PatchCoreModel:
         """
         _, C, H, W = features.shape
         points = self._features_to_points(features)         # (H*W, C)
+        bank = bank.to(points.device)
         dists = torch.cdist(points, bank)                   # (H*W, M)
         min_dists = dists.min(dim=1)[0]                     # (H*W,)
         patch_map = min_dists.reshape(H, W)
@@ -250,16 +229,70 @@ class PatchCoreModel:
             patch_map = patch_map * torch.from_numpy(resized.astype(np.float32))
         return patch_map
 
+    def _reference_scores(self, all_features: torch.Tensor,
+                          holdout_indices: List[int],
+                          train_indices: List[int],
+                          score_mask: np.ndarray | None = None,
+                          max_candidates: int = 20000,
+                          max_points: int = 500) -> List[float]:
+        """Raw scores of held-out images against a bank built without them."""
+        if not holdout_indices:
+            return []
+        train_points = self._features_to_points(all_features[train_indices])
+        bank = self._coreset_sampling(train_points,
+                                      max_candidates=max_candidates,
+                                      max_points=max_points)
+        scores = []
+        for i in holdout_indices:
+            patch_map = self._score_image(all_features[i:i + 1], bank,
+                                          score_mask=score_mask)
+            scores.append(float(patch_map.max()))
+        return scores
+
+    def _cross_validated_ref_scores(self, all_features: torch.Tensor,
+                                    score_mask: np.ndarray | None = None
+                                    ) -> Tuple[List[float], str]:
+        """Honest reference scores for tiny onboarding sets.
+
+        A single holdout split against a smaller preliminary bank inflates the
+        reference (the bank is weaker than the final one), which hides defects.
+        Leave-one-out (tiny sets) and 5-fold (larger sets) score every good
+        image against a bank that never saw it, so ``ref_score`` reflects the
+        real deployment distribution.
+        """
+        n = all_features.shape[0]
+        if n <= LOO_MAX_IMAGES:
+            scores: List[float] = []
+            for i in range(n):
+                others = [j for j in range(n) if j != i]
+                scores.extend(self._reference_scores(
+                    all_features, [i], others, score_mask))
+            return scores, "leave-one-out"
+
+        rng = np.random.default_rng(RANDOM_SEED)
+        fold_of = rng.permutation(n) % KFOLD
+        scores = []
+        for fold in range(KFOLD):
+            holdout = [i for i in range(n) if fold_of[i] == fold]
+            train = [i for i in range(n) if fold_of[i] != fold]
+            scores.extend(self._reference_scores(
+                all_features, holdout, train, score_mask))
+        return scores, f"{KFOLD}-fold"
+
     def fit(self, image_paths: List[str],
             holdout_indices: Optional[List[int]] = None,
             score_mask: np.ndarray | None = None) -> Dict[str, Any]:
         """Train the model on good images.
 
-        1. Split off holdout images.
-        2. Build a preliminary bank from the training split.
-        3. Compute raw scores of holdout images against that bank;
-           ref = max over holdout images (worst good unit sits at 0.50).
-        4. Rebuild the final memory bank on all images.
+        1. Extract patch features once for every image.
+        2. Derive ``ref_score`` (the worst-good reference) by cross-validation:
+           leave-one-out for sets up to ``LOO_MAX_IMAGES``, 5-fold above that.
+           Callers may pass an explicit ``holdout_indices`` split instead.
+        3. Build the final memory bank on all images.
+
+        Normalised score maps the worst held-out good unit to 0.50, so the
+        default PASS threshold sits below that and everything above goes to
+        REVIEW/FAIL.
 
         `score_mask` restricts reference scoring to the canonical product
         region so the normalisation matches runtime scoring.
@@ -272,32 +305,20 @@ class PatchCoreModel:
         torch.manual_seed(RANDOM_SEED)
         np.random.seed(RANDOM_SEED)
 
-        if holdout_indices is None:
-            # PRD: hold out >= 20% (minimum 5) for the reference score.
-            # Small onboarding sets degrade gracefully: always keep at least
-            # 3 images for the memory bank and at least 1 holdout.
-            n_holdout = max(MIN_TRAIN_IMAGES, int(round(len(image_paths) * 0.2)))
-            n_holdout = min(n_holdout, max(1, len(image_paths) - 3))
-            indices = list(range(len(image_paths)))
-            np.random.shuffle(indices)
-            holdout_indices = sorted(indices[:n_holdout])
-        train_indices = [i for i in range(len(image_paths)) if i not in holdout_indices]
-
         # Extract features once for all images
         all_features = self._extract_features_for_paths(image_paths)
         H, W = all_features.shape[2], all_features.shape[3]
 
-        # Preliminary bank from the training split only
-        train_points = self._features_to_points(all_features[train_indices])
-        prelim_bank = self._coreset_sampling(train_points, max_candidates=20000,
-                                             max_points=500)
+        if holdout_indices is not None:
+            train_indices = [i for i in range(len(image_paths))
+                             if i not in holdout_indices]
+            ref_scores = self._reference_scores(
+                all_features, list(holdout_indices), train_indices, score_mask)
+            calibration = "holdout"
+        else:
+            ref_scores, calibration = self._cross_validated_ref_scores(
+                all_features, score_mask)
 
-        # Reference score: worst holdout good image against the preliminary bank
-        ref_scores = []
-        for i in holdout_indices:
-            patch_map = self._score_image(all_features[i:i + 1], prelim_bank,
-                                          score_mask=score_mask)
-            ref_scores.append(float(patch_map.max()))
         self.ref_score = max(ref_scores) if ref_scores else 1.0
         if self.ref_score <= 0:
             self.ref_score = 1.0
@@ -315,7 +336,8 @@ class PatchCoreModel:
         return {
             "model_version": self.model_version,
             "n_training_images": self.n_training_images,
-            "n_holdout": len(holdout_indices),
+            "n_holdout": len(ref_scores),
+            "calibration": calibration,
             "ref_score": self.ref_score,
             "memory_bank_size": int(self.memory_bank.shape[0]),
             "feature_map_size": [H, W],
@@ -367,7 +389,7 @@ class PatchCoreModel:
             raise RuntimeError("Model not trained or loaded")
 
         self.eval()
-        tensor = preprocess_image(image_bgr).to(self.device)
+        tensor = preprocess_image(image_bgr, self.input_size).to(self.device)
 
         with torch.no_grad():
             features = self.extract_features(tensor)          # (1, C, H, W)
@@ -396,10 +418,11 @@ class PatchCoreModel:
             "created_at": self.created_at,
             "parent_version": self.parent_version,
             "coreset_ratio": self.coreset_ratio,
+            "backbone": self.backbone.config(),
         }, path)
 
     def load(self, path: str):
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         self.memory_bank = checkpoint["memory_bank"]
         self.ref_score = checkpoint["ref_score"]
         self.model_version = checkpoint["model_version"]
@@ -408,6 +431,8 @@ class PatchCoreModel:
         self.created_at = checkpoint["created_at"]
         self.parent_version = checkpoint.get("parent_version")
         self.coreset_ratio = checkpoint.get("coreset_ratio", COSET_RATIO)
+        self._use_backbone_config(checkpoint.get("backbone"))
+        self.to(self.device)
         self.eval()
         return self
 
@@ -417,17 +442,27 @@ class PatchCoreModel:
 # ---------------------------------------------------------------------------
 
 def create_overlay(image: np.ndarray, anomaly_map: np.ndarray, threshold: float,
-                   opacity: float = 0.5) -> np.ndarray:
-    """Create a heatmap overlay of the anomaly map on a BGR image (RGB out)."""
+                   opacity: float = 0.5,
+                   ref_score: Optional[float] = None) -> np.ndarray:
+    """Create a heatmap overlay of the anomaly map on a BGR image (RGB out).
+
+    When ``ref_score`` is given the map is calibrated exactly like the image
+    score (0.5 * raw / ref), so a passing unit renders calm instead of having
+    its tiny residual differences stretched to full red by min-max scaling.
+    """
     h, w = image.shape[:2]
     map_resized = cv2.resize(anomaly_map, (w, h))
 
-    map_min, map_max = map_resized.min(), map_resized.max()
-    if map_max > map_min:
-        map_normalized = (((map_resized - map_min) / (map_max - map_min)) * 255
-                          ).astype(np.uint8)
+    if ref_score and ref_score > 0:
+        calibrated = np.clip(0.5 * map_resized / ref_score, 0.0, 1.0)
+        map_normalized = (calibrated * 255).astype(np.uint8)
     else:
-        map_normalized = np.zeros_like(map_resized, dtype=np.uint8)
+        map_min, map_max = map_resized.min(), map_resized.max()
+        if map_max > map_min:
+            map_normalized = (((map_resized - map_min) / (map_max - map_min)) * 255
+                              ).astype(np.uint8)
+        else:
+            map_normalized = np.zeros_like(map_resized, dtype=np.uint8)
 
     heatmap = cv2.applyColorMap(map_normalized, cv2.COLORMAP_JET)
     heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)

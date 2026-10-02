@@ -31,6 +31,11 @@ weights_dir = ROOT / "packaging" / "weights" / "torch_home"
 if weights_dir.exists():
     datas.append((str(weights_dir), "torch_home"))
 
+# Bundled Hugging Face cache with timm DINOv2 weights (offline first run).
+hf_weights_dir = ROOT / "packaging" / "weights" / "hf"
+if hf_weights_dir.exists():
+    datas.append((str(hf_weights_dir), "hf_home"))
+
 # Optional bundled default configuration.
 default_config = ROOT / "packaging" / "config.default.json"
 if default_config.exists():
@@ -52,6 +57,9 @@ for package in (
     "realtime",
     "qrcode",
     "PIL",
+    "timm",
+    "huggingface_hub",
+    "safetensors",
 ):
     try:
         hiddenimports += collect_submodules(package)

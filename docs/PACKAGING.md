@@ -14,6 +14,7 @@ How the VisionQC desktop app is built and shipped. See `PLATFORM_PLAN.md`
 | Weights | `wide_resnet50_2-9ba9bcbe.pth` bundled | Offline first run at the factory; no download at runtime |
 | macOS signing | Ad-hoc (`codesign -s -`) for now | No paid Apple certificate yet; documented bypass |
 | macOS privacy | `NSCameraUsageDescription` + `NSMicrophoneUsageDescription` in the spec's `info_plist` | Without them macOS kills the process (TCC) on first camera access; CI verifies the keys |
+| Detection engine | DINOv2 ViT-S/14 for onboarding sets ≤ 50 images, WideResNet-50 above | DINOv2 generalizes better with few good images; WideResNet is on par and ~3× faster with plenty of data |
 | Windows signing | Unsigned for now | Documented SmartScreen bypass; real signing later |
 | CI | GitHub Actions matrix `macos-14` + `windows-latest` | Free for public repos |
 | Artifacts | Zips (14-day retention) + Release assets on `v*` tags | Manual builds + versioned releases |
@@ -34,6 +35,7 @@ The packaged app never writes inside its own bundle:
 | SQLite | `<data>/visionqc.db` |
 | Logs | `<data>/logs/` |
 | Bundled weights | `<bundle>/torch_home/hub/checkpoints/` via `TORCH_HOME` |
+| Bundled DINOv2 | `<bundle>/hf_home/hub/models--timm--*` via `HF_HOME` (staged into `<data>/hf_home` on first run) |
 
 Configuration resolution order: environment variables → user `config.json` →
 repo `desktop/config.local.json` (dev) → bundled `config.default.json` →
@@ -49,6 +51,9 @@ pip install pyinstaller==6.22.3
 mkdir -p packaging/weights/torch_home/hub/checkpoints
 cp ~/.cache/torch/hub/checkpoints/wide_resnet50_2-9ba9bcbe.pth \
    packaging/weights/torch_home/hub/checkpoints/
+
+# Stage DINOv2 ViT-S/14 (~84 MB) for the offline default engine
+python3 packaging/fetch_dinov2_weights.py
 
 # Regenerate the app icon if needed (macOS)
 python3 packaging/make_icon.py

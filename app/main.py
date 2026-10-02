@@ -192,7 +192,8 @@ def inspect_image(image: np.ndarray, model: PatchCoreModel, settings: dict) -> d
     )
 
     # Create overlay
-    overlay = create_overlay(image, prediction["anomaly_map"], threshold)
+    overlay = create_overlay(image, prediction["anomaly_map"], threshold,
+                             ref_score=model.ref_score)
 
     latency_ms = int((time.time() - start_time) * 1000)
 
