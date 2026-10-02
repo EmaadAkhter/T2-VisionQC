@@ -28,6 +28,7 @@ NAV_ITEMS = [
     ("train", "Train"),
     ("profiles", "Profiles"),
     ("cameras", "Cameras"),
+    ("multi_camera", "Multi-camera"),
     ("kpi", "KPI"),
     ("settings", "Settings"),
 ]
@@ -205,8 +206,8 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(self.pages[key])
         self.stack.setCurrentWidget(self.pages[key])
         for button in self.nav_group.buttons():
-            text = button.text().lower()
-            button.setChecked(key in text)
+            text = button.text().lower().replace("-", " ")
+            button.setChecked(key.replace("_", " ") in text)
 
     def _create_page(self, key: str) -> QWidget:
         if key == "inspect":
@@ -224,6 +225,10 @@ class MainWindow(QMainWindow):
             from desktop.ui.cameras import CamerasPage
             return CamerasPage(self.auth, self.org, self.statusBar(), self.edge,
                                smoke=self.smoke, sync_engine=self.sync_engine)
+        if key == "multi_camera":
+            from desktop.ui.multi_camera import MultiCameraPage
+            return MultiCameraPage(self.auth, self.org, self.statusBar(),
+                                   sync_engine=self.sync_engine)
         if key == "kpi":
             from desktop.ui.kpi import KpiPage
             return KpiPage(self.auth, self.org, sync_engine=self.sync_engine)

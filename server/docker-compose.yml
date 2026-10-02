@@ -1,0 +1,14 @@
+services:
+  visionqc-server:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      VISIONQC_DASHBOARD_TOKEN: ${VISIONQC_DASHBOARD_TOKEN:-change-me}
+      VISIONQC_RELAY_FPS: ${VISIONQC_RELAY_FPS:-5}
+    volumes:
+      - visionqc-data:/data
+    restart: unless-stopped
+
+volumes:
+  visionqc-data:

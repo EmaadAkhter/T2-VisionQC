@@ -76,7 +76,8 @@ def main() -> int:
     window.resize(1280, 820)
     window.show()
     app.processEvents()
-    for key in ("inspect", "train", "profiles", "cameras", "kpi", "settings"):
+    for key in ("inspect", "train", "profiles", "cameras", "multi_camera",
+                "kpi", "settings"):
         window._switch(key)  # noqa: SLF001 - screenshot tool
         app.processEvents()
         window.grab().save(str(OUT / f"ui_{key}.png"))

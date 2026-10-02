@@ -50,6 +50,7 @@ for package in (
     "httpx",
     "httpcore",
     "h11",
+    "websockets",
     "postgrest",
     "supabase",
     "gotrue",
