@@ -37,7 +37,7 @@ class StationPage(InspectPage):
         self.auto_check.setChecked(False)
         self.auto_check.setToolTip(
             "Station mode captures with Space. Enable to also auto-log FAILs "
-            "while the feed is live."
+            "and REVIEWs (with evidence images) while the feed is live."
         )
         QShortcut(QKeySequence("Space"), self, activated=self._space)
         # Space must never click a focused button.

@@ -98,6 +98,7 @@ class InspectPage(QWidget):
         self._live_error_shown = False
         self._inspect_worker: FunctionWorker | None = None
         self.relay_client: ServerClient | None = None
+        self._relay_camera_id: str | None = None
         self._relay_worker: FunctionWorker | None = None
 
         # Cached product-outline overlay for the live preview.
@@ -228,10 +229,11 @@ class InspectPage(QWidget):
         self.camera_button.clicked.connect(self._toggle_camera)
         controls.addWidget(self.camera_button)
 
-        self.auto_check = QCheckBox("Auto-capture FAIL")
+        self.auto_check = QCheckBox("Auto-log FAIL & REVIEW")
         self.auto_check.setChecked(True)
         self.auto_check.setToolTip(
-            "Log a FAIL automatically when it persists for two frames."
+            "Log a FAIL or REVIEW automatically (with its evidence images) "
+            "when it persists for two frames."
         )
         controls.addWidget(self.auto_check)
 
@@ -345,6 +347,7 @@ class InspectPage(QWidget):
                 self._on_relay_frame(expected, cid, jpeg)
         )
         self.relay_client = client
+        self._relay_camera_id = camera_id
         self.camera_button.setEnabled(False)
         self.camera_button.setText("Connecting…")
         self.live_status.setText(
@@ -411,6 +414,7 @@ class InspectPage(QWidget):
         if self.relay_client is not None:
             self.relay_client.stop()
             self.relay_client = None
+            self._relay_camera_id = None
         self.camera_button.setEnabled(True)
         self.camera_button.setText("Start live inspection")
         self.log_button.setEnabled(False)
@@ -537,8 +541,9 @@ class InspectPage(QWidget):
 
     def _on_live_result(self, result: dict) -> None:
         if result.get("no_product"):
-            # Empty scene: never auto-capture the background. Feed a non-FAIL
-            # verdict so the decider re-arms when the next unit arrives.
+            # Empty scene: never auto-capture the background. Feed a
+            # non-capture verdict so the decider re-arms when the next unit
+            # arrives.
             self.latest_result = None
             self.log_button.setEnabled(False)
             self.banner.set_result(
@@ -548,7 +553,7 @@ class InspectPage(QWidget):
             self.explanation_label.setText("")
             self.detail_label.setText("")
             self.overlay_label.setText("No product in view")
-            self.decider.update("REVIEW")
+            self.decider.update("PASS")
             return
         self.latest_result = result
         self.latest_result_at = time.monotonic()
@@ -600,7 +605,9 @@ class InspectPage(QWidget):
         model = model or self._live_model or self._selected_model()
         if model is None or "frame" not in result:
             return None
-        uid = log_inspection(result, result["frame"], model.model_version)
+        camera_id = self._relay_camera_id if self.relay_client is not None else None
+        uid = log_inspection(result, result["frame"], model.model_version,
+                             camera_id=camera_id)
         self.last_uid = uid
         self.status_bar.showMessage(f"{reason}: logged {uid}", 4000)
         if self.sync_engine is not None:

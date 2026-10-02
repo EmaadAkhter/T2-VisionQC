@@ -62,13 +62,37 @@ def test_pass_resets_fail_streak():
     assert decider.update("FAIL", now=0.2) is False
 
 
-def test_review_does_not_trigger_but_rearms():
+def test_review_captures_after_persistence():
+    """Default policy: a REVIEW that persists is auto-logged with evidence."""
+    decider = AutoCaptureDecider(min_consecutive=2, cooldown_s=3.0)
+    assert decider.update("REVIEW", now=0.0) is False
+    assert decider.update("REVIEW", now=0.1) is True
+    assert decider.armed is False
+
+
+def test_fail_only_mode_ignores_review():
+    """Legacy policy: capture_verdicts=("FAIL",) keeps the old behavior."""
     decider = AutoCaptureDecider(min_consecutive=2, cooldown_s=3.0,
-                                 rearm_consecutive=1)
+                                 rearm_consecutive=1,
+                                 capture_verdicts=("FAIL",))
     decider.update("FAIL", now=0.0)
     assert decider.update("FAIL", now=0.1) is True
     assert decider.update("REVIEW", now=0.2) is False
     assert decider.armed is True
+
+
+def test_mixed_fail_review_streak_triggers_once():
+    decider = AutoCaptureDecider(min_consecutive=3, cooldown_s=3.0)
+    assert decider.update("FAIL", now=0.0) is False
+    assert decider.update("REVIEW", now=0.1) is False
+    assert decider.update("FAIL", now=0.2) is True
+
+
+def test_pass_resets_review_streak():
+    decider = AutoCaptureDecider(min_consecutive=2, cooldown_s=3.0)
+    assert decider.update("REVIEW", now=0.0) is False
+    assert decider.update("PASS", now=0.1) is False
+    assert decider.update("REVIEW", now=0.2) is False
 
 
 def test_reset_clears_state():
