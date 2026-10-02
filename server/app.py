@@ -43,7 +43,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 DATA_DIR = Path(os.environ.get("VISIONQC_SERVER_DATA", "server-data"))
 MODELS_DIR = DATA_DIR / "models"
@@ -253,14 +253,26 @@ def _require_dashboard(token: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="VisionQC Relay", version="0.1.0")
-app.mount("/download", StaticFiles(directory=str(DOWNLOADS_DIR), check_dir=False),
-          name="downloads")
 
 
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/download/{filename}")
+async def download(filename: str) -> FileResponse:
+    """Serve client builds; no-cache so a new APK is never stale at the edge."""
+    target = DOWNLOADS_DIR / Path(filename).name
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(
+        target,
+        media_type="application/vnd.android.package-archive",
+        filename=target.name,
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/health")
