@@ -243,8 +243,12 @@ python3 -m desktop.launcher
 #   owner@visionqc.local    admin@visionqc.local
 #   operator@visionqc.local analyst@visionqc.local
 
-# 5. Run the web admin console
+# 5. Run the web admin console (dev server)
 cd admin-web && npm install && npm run dev   # http://localhost:5173
+
+# 5b. Or serve landing page + built console through the relay + tunnel:
+cd admin-web && npm run build && cd ..
+./server/serve_local.sh   # https://visionqc.tavesglobal.com (/ and /admin/)
 
 # 6. Mobile app (Android build)
 cd mobile && flutter pub get && flutter build apk --debug

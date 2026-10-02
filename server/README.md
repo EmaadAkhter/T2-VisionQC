@@ -3,6 +3,21 @@
 One small service that lets phones run VisionQC cameras and lets the desktop
 app watch every camera in one dashboard. Deployable anywhere Docker runs.
 
+## Public site (single host)
+
+The relay serves the public pages on the same hostname as the camera API:
+
+| Path | Source | Purpose |
+| --- | --- | --- |
+| `/` | `web/` | Landing page |
+| `/admin/` | `admin-web/dist` | Built React console |
+| `/images/` | `images/` | Screenshots used by the landing page |
+
+Build the console once with `cd admin-web && npm run build` (or let
+`serve_local.sh` build it when `dist/` is missing). The public endpoint is
+`https://visionqc.tavesglobal.com` — `/` is the landing page and `/admin/`
+the web console, both behind the existing `visionqc` Cloudflare tunnel.
+
 ## Run locally
 
 ```bash
