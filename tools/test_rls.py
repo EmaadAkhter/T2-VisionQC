@@ -177,6 +177,39 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             check("invitation cannot be reused", True, type(exc).__name__)
 
+    # --- auto-claim on sign-in --------------------------------------------
+    claim_invite = admin_user.table("invitations").insert({
+        "org_id": DEMO_ORG,
+        "email": "claimer@visionqc.local",
+        "role": "analyst",
+        "invited_by": "22222222-2222-4222-8222-222222222222",
+    }).execute()
+    check("admin can invite the claiming user", len(claim_invite.data) == 1)
+
+    ensure_user(admin, "claimer@visionqc.local", "claimer123")
+    claimer = anon_client()
+    claimer.auth.sign_in_with_password(
+        {"email": "claimer@visionqc.local", "password": "claimer123"}
+    )
+    claimed = claimer.rpc("claim_invitations").execute()
+    check("claim_invitations returns the org",
+          claimed.data == [DEMO_ORG], str(claimed.data))
+    claimer_orgs = claimer.table("my_orgs").select("*").execute().data
+    check("claimed user has analyst role",
+          any(r["id"] == DEMO_ORG and r["role"] == "analyst"
+              for r in claimer_orgs), str(claimer_orgs))
+
+    second_claim = claimer.rpc("claim_invitations").execute()
+    check("claim cannot be repeated", not second_claim.data,
+          str(second_claim.data))
+
+    no_invite = anon_client()
+    no_invite.auth.sign_in_with_password(
+        {"email": "outsider@visionqc.local", "password": "outsider123"}
+    )
+    none_claimed = no_invite.rpc("claim_invitations").execute()
+    check("claim with no invitation returns nothing", not none_claimed.data)
+
     # --- cleanup ----------------------------------------------------------
     service.table("inspections").delete().eq("uid", "RLS-TEST-OP-1").execute()
     service.table("invitations").delete().eq("org_id", DEMO_ORG).execute()

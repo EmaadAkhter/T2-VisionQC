@@ -115,6 +115,18 @@ class AuthService:
 
     # -- organizations ------------------------------------------------------
 
+    def claim_invitations(self) -> list[str]:
+        """Accept any pending invitation addressed to this account.
+
+        Admins create invitations in the web console; the desktop simply
+        claims them after sign-in. Returns the affected organization ids.
+        """
+        try:
+            result = self.client.rpc("claim_invitations").execute()
+        except Exception:  # noqa: BLE001 - older servers may not have the RPC
+            return []
+        return list(result.data or [])
+
     def refresh_orgs(self) -> list[OrgContext]:
         try:
             rows = self.client.table("my_orgs").select("*").execute().data

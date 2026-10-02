@@ -42,12 +42,15 @@ ROLE_LABELS = {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, auth: AuthService, org: OrgContext, smoke: bool = False):
+    def __init__(self, auth: AuthService, orgs: list[OrgContext],
+                 org: OrgContext, smoke: bool = False):
         super().__init__()
         self.auth = auth
+        self.orgs = orgs
         self.org = org
         self.smoke = smoke
         self.pages: dict[str, QWidget] = {}
+        self._current_key = "inspect"
 
         from desktop import __version__
 
@@ -65,17 +68,10 @@ class MainWindow(QMainWindow):
         root.addWidget(self.stack, 1)
         self.setCentralWidget(central)
 
-        # Local edge server for the mobile companion (LAN only).
-        if not smoke:
-            self.edge = EdgeServer(org_id=org.org_id)
-            self.edge.start()
-            self.sync_engine = SyncEngine(auth, org.org_id)
-            self.sync_engine.state_changed.connect(self._on_sync_state)
-            self.sync_engine.progress.connect(self._on_sync_progress)
-            self.sync_engine.start()
-        else:
-            self.edge = None
-            self.sync_engine = None
+        # Local edge server + sync for the active organization.
+        self.edge = None
+        self.sync_engine = None
+        self._bind_org(org)
 
         self._build_status_bar()
         self._switch("inspect")
@@ -86,9 +82,26 @@ class MainWindow(QMainWindow):
         self._online_timer.start()
         self._refresh_online()
 
+    def _bind_org(self, org: OrgContext) -> None:
+        """Start/restart edge + sync for an organization."""
+        if self.smoke:
+            return
+        if self.edge is not None:
+            self.edge.stop()
+        if self.sync_engine is not None:
+            self.sync_engine.stop()
+        self.edge = EdgeServer(org_id=org.org_id)
+        self.edge.start()
+        self.sync_engine = SyncEngine(self.auth, org.org_id)
+        self.sync_engine.state_changed.connect(self._on_sync_state)
+        self.sync_engine.progress.connect(self._on_sync_progress)
+        self.sync_engine.start()
+
     # --------------------------------------------------------------- sidebar
 
     def _build_sidebar(self) -> QWidget:
+        from PySide6.QtWidgets import QComboBox
+
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
         sidebar.setFixedWidth(230)
@@ -100,12 +113,28 @@ class MainWindow(QMainWindow):
         title.setObjectName("SidebarTitle")
         layout.addWidget(title)
 
-        self.org_label = QLabel(
-            f"{self.org.org_name}\n{ROLE_LABELS.get(self.org.role, self.org.role)}"
-        )
-        self.org_label.setObjectName("SidebarOrg")
-        self.org_label.setWordWrap(True)
-        layout.addWidget(self.org_label)
+        if len(self.orgs) > 1:
+            self.org_combo = QComboBox()
+            for org in self.orgs:
+                self.org_combo.addItem(org.org_name, org)
+            index = next(
+                (i for i, o in enumerate(self.orgs)
+                 if o.org_id == self.org.org_id), 0
+            )
+            self.org_combo.setCurrentIndex(index)
+            self.org_combo.currentIndexChanged.connect(self._switch_org)
+            layout.addWidget(self.org_combo)
+            self.org_label = QLabel("")
+            self.org_label.setObjectName("SidebarOrg")
+            self.org_label.setWordWrap(True)
+            layout.addWidget(self.org_label)
+        else:
+            self.org_combo = None
+            self.org_label = QLabel("")
+            self.org_label.setObjectName("SidebarOrg")
+            self.org_label.setWordWrap(True)
+            layout.addWidget(self.org_label)
+        self._refresh_org_label()
         layout.addSpacing(18)
 
         self.nav_group = QButtonGroup(self)
@@ -130,9 +159,37 @@ class MainWindow(QMainWindow):
         layout.addWidget(logout)
         return sidebar
 
+    def _refresh_org_label(self) -> None:
+        role = ROLE_LABELS.get(self.org.role, self.org.role)
+        if len(self.orgs) > 1:
+            self.org_label.setText(f"Role: {role}")
+        else:
+            self.org_label.setText(f"{self.org.org_name}\nRole: {role}")
+
+    def _switch_org(self, index: int) -> None:
+        if index < 0 or index >= len(self.orgs):
+            return
+        org = self.orgs[index]
+        if org.org_id == self.org.org_id:
+            return
+        self.org = org
+        self._refresh_org_label()
+        self._bind_org(org)
+        self._rebuild_pages()
+
+    def _rebuild_pages(self) -> None:
+        """Recreate pages so they bind to the newly selected organization."""
+        current = self._current_key
+        for page in self.pages.values():
+            self.stack.removeWidget(page)
+            page.deleteLater()
+        self.pages = {}
+        self._switch(current)
+
     # ----------------------------------------------------------------- pages
 
     def _switch(self, key: str) -> None:
+        self._current_key = key
         if key not in self.pages:
             self.pages[key] = self._create_page(key)
             self.stack.addWidget(self.pages[key])

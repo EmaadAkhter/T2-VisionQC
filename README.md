@@ -49,7 +49,12 @@ USB / RTSP cameras ────────────────────�
   continuously while the screen is open; verdicts and heatmaps come back from
   the desktop.
 - **Cloud** (`supabase/`): schema, row-level security and seed data. Runs
-  locally via Docker now; switching to hosted Supabase is a URL/key change.
+  locally via Docker or against a hosted Supabase project
+  (`python3 tools/write_supabase_env.py --hosted`).
+- **Web admin console** (`admin-web/`): Vite + React. Owners/admins create the
+  organization, invite members, set roles, manage cameras. This is the only
+  place access is managed — the desktop just signs in with email and password
+  and auto-joins whatever the admin assigned.
 - **Edge server** (`desktop/edge_server.py`): LAN-only frame intake with
   pairing codes and device tokens. Frames are analysed on the desktop and are
   never uploaded to the cloud.
@@ -66,26 +71,42 @@ USB / RTSP cameras ────────────────────�
 ```bash
 # 1. Start local Supabase (Docker required)
 supabase start
-python3 tools/write_supabase_env.py     # writes desktop + mobile configs
+python3 tools/write_supabase_env.py     # writes desktop + mobile + web configs
 
 # 2. Verify auth, roles and tenant isolation
-python3 tools/test_rls.py               # 15/15 checks expected
+python3 tools/test_rls.py               # 20/20 checks expected
 
 # 3. Run the desktop app
-python3 -m desktop.main
+python3 -m desktop.launcher
 # Seeded accounts (local only, password for all: visionqc123):
 #   owner@visionqc.local    admin@visionqc.local
 #   operator@visionqc.local analyst@visionqc.local
 
-# 4. Mobile app (Android build)
+# 4. Run the web admin console
+cd admin-web && npm install && npm run dev   # http://localhost:5173
+
+# 5. Mobile app (Android build)
 cd mobile
 flutter build apk --debug               # output: build/app/outputs/flutter-apk/
 ```
 
-Desktop workflow: sign in → choose/create organization → **Train** on 20–30
-good images → **Inspect** with webcam/upload → **Cameras** to register line
-cameras and pair phones → **KPI** to see today's numbers. Inspections sync to
-the cloud automatically (retry/backoff; evidence upload policy in Settings).
+**Access model:** accounts and organizations are managed in the **web
+console** (sign up → create organization → invite members with roles). The
+desktop asks only for email and password; on sign-in it claims any pending
+invitation and uses the assigned organization. Multi-org users get a sidebar
+switcher.
+
+**Hosted Supabase:** put the project's URL, anon key and database URL in
+`supabase/.env.hosted` (git-ignored), apply migrations once with
+`supabase db push --db-url "$DB_URL"`, then run
+`python3 tools/write_supabase_env.py --hosted` to point desktop, mobile and
+web at the hosted project.
+
+Desktop workflow: sign in with email + password (access comes from the web
+console) → **Train** on 20–30 good images → **Inspect** with webcam/upload →
+**Cameras** to register line cameras and pair phones → **KPI** to see today's
+numbers. Inspections sync to the cloud automatically (retry/backoff; evidence
+upload policy in Settings).
 
 Desktop packaging: builds for macOS and Windows are produced by
 `.github/workflows/desktop-build.yml`; see **[docs/PACKAGING.md](docs/PACKAGING.md)**

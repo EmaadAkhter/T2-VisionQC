@@ -1,73 +1,58 @@
-"""Sign-in, sign-up and organization onboarding window."""
+"""Sign-in window: email and password only.
+
+Organization access is managed by admins in the web console. The desktop
+claims any pending invitation after sign-in and simply uses whatever
+memberships the account has.
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
-    QFrame,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QStackedWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 from desktop.auth import AuthError, AuthService, OrgContext
-from desktop.theme import ACCENT, MUTED
 
 
 class LoginWindow(QDialog):
-    """Modal flow: authenticate, then pick or create an organization."""
-
     def __init__(self, auth: AuthService, parent=None):
         super().__init__(parent)
         self.auth = auth
-        self.org: OrgContext | None = None
+        self.orgs: list[OrgContext] = []
 
         self.setWindowTitle("VisionQC — Sign in")
-        self.setMinimumSize(430, 520)
-
-        self.stack = QStackedWidget()
-        self.stack.addWidget(self._build_auth_page())
-        self.stack.addWidget(self._build_org_page())
+        self.setMinimumWidth(420)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.stack)
-
-        self._show_auth_page()
-
-    # ------------------------------------------------------------------ auth
-
-    def _build_auth_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setContentsMargins(36, 32, 36, 32)
         layout.setSpacing(12)
 
         title = QLabel("VisionQC")
         title.setObjectName("Title")
         layout.addWidget(title)
-        subtitle = QLabel("Offline visual inspection for your factory")
+        subtitle = QLabel("Sign in with your organization account")
         subtitle.setObjectName("Subtitle")
         layout.addWidget(subtitle)
-        layout.addSpacing(18)
+        layout.addSpacing(12)
 
-        self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("Full name (sign-up only)")
-        layout.addWidget(self.name_input)
-
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.email_input = QLineEdit()
         self.email_input.setPlaceholderText("you@factory.com")
-        layout.addWidget(self.email_input)
+        form.addRow("Email", self.email_input)
 
         self.password_input = QLineEdit()
-        self.password_input.setPlaceholderText("Password")
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self.password_input)
+        self.password_input.setPlaceholderText("Password")
+        form.addRow("Password", self.password_input)
+        layout.addLayout(form)
 
         self.error_label = QLabel("")
         self.error_label.setStyleSheet("color: #dc2626;")
@@ -76,153 +61,93 @@ class LoginWindow(QDialog):
 
         self.sign_in_button = QPushButton("Sign in")
         self.sign_in_button.setObjectName("Primary")
+        self.sign_in_button.setDefault(True)
         self.sign_in_button.clicked.connect(self._sign_in)
         layout.addWidget(self.sign_in_button)
 
-        self.sign_up_button = QPushButton("Create account")
-        self.sign_up_button.clicked.connect(self._sign_up)
-        layout.addWidget(self.sign_up_button)
-
-        layout.addStretch(1)
         hint = QLabel(
-            "Local development: owner@visionqc.local / visionqc123\n"
-            "(seeded by supabase/seed.sql)"
+            "No account? Ask your admin to invite you from the VisionQC web "
+            "console. Local demo: owner@visionqc.local / visionqc123"
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
-        return page
-
-    def _show_auth_page(self) -> None:
-        self.stack.setCurrentIndex(0)
-        self.sign_in_button.setDefault(True)
 
     def _sign_in(self) -> None:
-        self._authenticate(lambda: self.auth.sign_in(
-            self.email_input.text().strip(), self.password_input.text()
-        ))
-
-    def _sign_up(self) -> None:
-        name = self.name_input.text().strip()
-        if not name:
-            self._set_error("Enter your full name before creating an account.")
+        email = self.email_input.text().strip()
+        password = self.password_input.text()
+        if not email or not password:
+            self.error_label.setText("Enter your email and password.")
             return
-        self._authenticate(lambda: self.auth.sign_up(
-            self.email_input.text().strip(), self.password_input.text(), name
-        ))
 
-    def _authenticate(self, action) -> None:
-        self._set_error("")
+        self.error_label.setText("")
         self.sign_in_button.setEnabled(False)
         try:
-            action()
+            self.auth.sign_in(email, password)
+            self.auth.claim_invitations()
+            self.orgs = self.auth.refresh_orgs()
         except AuthError as exc:
-            self._set_error(str(exc))
+            self.error_label.setText(str(exc))
             self.sign_in_button.setEnabled(True)
             return
         self.sign_in_button.setEnabled(True)
-        self._load_orgs()
+        self.accept()
 
-    def _set_error(self, message: str) -> None:
-        self.error_label.setText(message)
 
-    # ------------------------------------------------------------------- orgs
+class NoAccessDialog(QDialog):
+    """Signed in, but the account has no organization membership yet."""
 
-    def _build_org_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(40, 40, 40, 40)
+    def __init__(self, auth: AuthService, parent=None):
+        super().__init__(parent)
+        self.auth = auth
+        self.orgs: list[OrgContext] = []
+
+        self.setWindowTitle("VisionQC — No access yet")
+        self.setMinimumWidth(440)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(32, 28, 32, 28)
         layout.setSpacing(12)
 
-        title = QLabel("Choose your organization")
+        title = QLabel("No access yet")
         title.setObjectName("Title")
         layout.addWidget(title)
-        self.org_hint = QLabel("")
-        self.org_hint.setObjectName("Subtitle")
-        layout.addWidget(self.org_hint)
-        layout.addSpacing(10)
 
-        self.org_combo = QComboBox()
-        layout.addWidget(self.org_combo)
+        message = QLabel(
+            f"Signed in as {auth.user_email}.\n\n"
+            "This account is not a member of any organization. Ask your "
+            "administrator to invite you from the VisionQC web console, then "
+            "press “Check again”."
+        )
+        message.setWordWrap(True)
+        layout.addWidget(message)
 
-        continue_button = QPushButton("Continue")
-        continue_button.setObjectName("Primary")
-        continue_button.clicked.connect(self._accept_org)
-        layout.addWidget(continue_button)
+        self.status = QLabel("")
+        self.status.setObjectName("Muted")
+        layout.addWidget(self.status)
 
-        layout.addSpacing(24)
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(divider)
+        buttons = QHBoxLayout()
+        check = QPushButton("Check again")
+        check.setObjectName("Primary")
+        check.clicked.connect(self._check)
+        buttons.addWidget(check)
 
-        new_org_label = QLabel("Create a new organization")
-        new_org_label.setObjectName("CardTitle")
-        layout.addWidget(new_org_label)
-
-        self.new_org_input = QLineEdit()
-        self.new_org_input.setPlaceholderText("e.g. Acme Plastics")
-        layout.addWidget(self.new_org_input)
-
-        self.org_error = QLabel("")
-        self.org_error.setStyleSheet("color: #dc2626;")
-        self.org_error.setWordWrap(True)
-        layout.addWidget(self.org_error)
-
-        create_button = QPushButton("Create organization")
-        create_button.clicked.connect(self._create_org)
-        layout.addWidget(create_button)
-
-        layout.addStretch(1)
         sign_out = QPushButton("Sign out")
-        sign_out.setObjectName("Danger")
-        sign_out.clicked.connect(self._sign_out)
-        layout.addWidget(sign_out)
-        return page
+        sign_out.clicked.connect(self.reject)
+        buttons.addWidget(sign_out)
+        layout.addLayout(buttons)
 
-    def _load_orgs(self) -> None:
-        self.org_combo.clear()
+    def _check(self) -> None:
+        self.status.setText("Checking for invitations…")
         try:
-            orgs = self.auth.refresh_orgs()
+            self.auth.claim_invitations()
+            self.orgs = self.auth.refresh_orgs()
         except AuthError as exc:
-            self._set_error(str(exc))
+            self.status.setText(str(exc))
             return
-        if orgs:
-            for org in orgs:
-                self.org_combo.addItem(
-                    f"{org.org_name}  ({org.role.replace('_', ' ')})", org
-                )
-            self.stack.setCurrentIndex(1)
+        if self.orgs:
+            self.accept()
         else:
-            self.org_hint.setText(
-                f"Signed in as {self.auth.user_email}. "
-                "You are not a member of any organization yet."
+            self.status.setText(
+                "Still no access. Ask your admin to send the invitation."
             )
-            self.stack.setCurrentIndex(1)
-
-    def _accept_org(self) -> None:
-        org = self.org_combo.currentData()
-        if org is None:
-            self.org_error.setText("Create an organization to continue.")
-            return
-        self.org = org
-        self.accept()
-
-    def _create_org(self) -> None:
-        name = self.new_org_input.text().strip()
-        if len(name) < 2:
-            self.org_error.setText("Enter an organization name (2+ characters).")
-            return
-        try:
-            self.org = self.auth.create_org(name)
-        except AuthError as exc:
-            self.org_error.setText(str(exc))
-            return
-        self.accept()
-
-    def _sign_out(self) -> None:
-        self.auth.sign_out()
-        self._show_auth_page()
-        self.org_combo.clear()
-        self.new_org_input.clear()
-        self.org_error.clear()
-        self._set_error("")

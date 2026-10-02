@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from desktop.auth import AuthError, AuthService  # noqa: E402
 from desktop.config import is_configured, load_config, save_config  # noqa: E402
 from desktop.theme import STYLESHEET  # noqa: E402
-from desktop.ui.login import LoginWindow  # noqa: E402
+from desktop.ui.login import LoginWindow, NoAccessDialog  # noqa: E402
 from desktop.ui.window import MainWindow  # noqa: E402
 from db import database as db  # noqa: E402
 
@@ -136,14 +136,23 @@ def main() -> int:
     # If a cached session exists, go straight to org selection.
     if auth.user_email and auth._restore_session():  # noqa: SLF001 - intentional
         try:
+            auth.claim_invitations()
             auth.refresh_orgs()
         except AuthError:
             pass
 
     login = LoginWindow(auth)
-    if login.exec() != QDialog.DialogCode.Accepted or login.org is None:
+    if login.exec() != QDialog.DialogCode.Accepted:
         return 0
-    window = MainWindow(auth, login.org)
+    orgs = login.orgs
+
+    if not orgs:
+        no_access = NoAccessDialog(auth)
+        if no_access.exec() != QDialog.DialogCode.Accepted or not no_access.orgs:
+            return 0
+        orgs = no_access.orgs
+
+    window = MainWindow(auth, orgs, orgs[0])
     window.show()
     return app.exec()
 

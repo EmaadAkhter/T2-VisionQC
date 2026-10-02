@@ -6,18 +6,23 @@ live inference and the phone companion.
 ## One-time setup (before the demo)
 
 ```bash
-# Terminal 1 — local cloud
+# Terminal 1 — control plane (local stack, or use --hosted)
 supabase start
-python3 tools/write_supabase_env.py      # desktop + mobile configs
+python3 tools/write_supabase_env.py
 
 # Verify the backend is healthy
-python3 tools/test_rls.py                # expect: 15/15 checks passed
+python3 tools/test_rls.py                # expect: 20/20 checks passed
 
-# Terminal 2 — desktop app
-python3 -m desktop.main
+# Terminal 2 — web admin console
+cd admin-web && npm install && npm run dev    # http://localhost:5173
+
+# Terminal 3 — desktop app
+python3 -m desktop.launcher
 ```
 
-Sign in as `owner@visionqc.local` / `visionqc123` and choose **Demo Works**.
+Web console: sign up (first user) → **create organization** → invite the
+demo users with roles. The desktop asks only for email and password and
+auto-joins the assigned organization.
 
 Mobile (optional): install the debug APK from
 `mobile/build/app/outputs/flutter-apk/app-debug.apk`, keep the phone on the
@@ -28,7 +33,7 @@ same Wi-Fi as the laptop.
 | Time | Beat | What to show |
 |---|---|---|
 | 0:00–0:20 | Problem | Small factories have no vision budget and no defect dataset. VisionQC needs only good photos. |
-| 0:20–1:00 | Cloud + roles | Sign in, organization, and the same account available to the team. Mention row-level isolation: every org sees only its own data. |
+| 0:20–1:00 | Access model | Web console: organization, invite by email + role, change/remove access. Desktop asks only for email + password; an invited user joins automatically. Mention row-level isolation: every org sees only its own data. |
 | 1:00–1:40 | Train | Train on 20–30 good bottle photos. Point out build time (~10 s on CPU) and model versions. |
 | 1:40–2:40 | Inspect | Inspect a good unit → PASS, "No unusual areas found." Then a defective unit → FAIL with heatmap on the defect and a plain-language explanation. Show the REVIEW band and Accept/Reject. |
 | 2:40–3:20 | Cameras | Register a line camera, live preview. Show the **Mobile pairing** card with QR and 6-digit code. |

@@ -40,7 +40,7 @@ def main() -> int:
     login = LoginWindow(auth)
     print("login window constructed")
 
-    window = MainWindow(auth, org)
+    window = MainWindow(auth, [org], org)
     for key in ("inspect", "train", "cameras", "kpi", "settings"):
         window._switch(key)  # noqa: SLF001 - smoke test
         print(f"page constructed: {key}")
