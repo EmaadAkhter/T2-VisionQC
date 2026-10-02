@@ -34,11 +34,17 @@ class CameraStream(QThread):
         opened: capture opened successfully
         frame_ready(object): a BGR numpy frame
         error(str): one of OPEN_FAILED / STREAM_LOST
+
+    A stream that drops after opening is retried a few times before the
+    error is reported, so a brief USB/network hiccup does not end preview.
     """
 
     opened = Signal()
     frame_ready = Signal(object)
     error = Signal(str)
+
+    MAX_RECONNECTS = 3
+    RECONNECT_DELAY_MS = 2000
 
     def __init__(self, kind: str, address: str, interval_ms: int = 40):
         super().__init__()
@@ -53,34 +59,59 @@ class CameraStream(QThread):
         return self.address
 
     def run(self) -> None:  # noqa: D102
-        try:
-            capture = cv2.VideoCapture(self._source())
-        except Exception:  # noqa: BLE001 - report, never crash the thread
-            self.error.emit(OPEN_FAILED)
-            return
-        if not capture.isOpened():
-            capture.release()
-            self.error.emit(OPEN_FAILED)
-            return
-        self.opened.emit()
-
-        misses = 0
+        reconnects = 0
+        first_open = True
         while self.running:
-            ok, frame = capture.read()
-            if not ok:
-                misses += 1
-                # ~1.2 s of failed reads means the device is gone.
-                if misses > 30:
-                    capture.release()
-                    if self.running:
-                        self.error.emit(STREAM_LOST)
+            try:
+                capture = cv2.VideoCapture(self._source())
+            except Exception:  # noqa: BLE001 - report, never crash the thread
+                self.error.emit(OPEN_FAILED if first_open else STREAM_LOST)
+                return
+            if not capture.isOpened():
+                capture.release()
+                if first_open:
+                    self.error.emit(OPEN_FAILED)
                     return
-                self.msleep(self.interval_ms)
+                reconnects += 1
+                if reconnects > self.MAX_RECONNECTS:
+                    self.error.emit(STREAM_LOST)
+                    return
+                self.msleep(self.RECONNECT_DELAY_MS)
                 continue
+
+            if first_open:
+                first_open = False
+                self.opened.emit()
+
             misses = 0
-            self.frame_ready.emit(frame)
-            self.msleep(self.interval_ms)
-        capture.release()
+            stable = 0
+            while self.running:
+                ok, frame = capture.read()
+                if ok:
+                    misses = 0
+                    stable += 1
+                    if stable == 25:
+                        # About a second of healthy frames: the stream is
+                        # stable again, restore the reconnect budget.
+                        reconnects = 0
+                    self.frame_ready.emit(frame)
+                    self.msleep(self.interval_ms)
+                    continue
+                stable = 0
+                misses += 1
+                # ~1.2 s of failed reads: treat the device as lost.
+                if misses > 30:
+                    break
+                self.msleep(self.interval_ms)
+            capture.release()
+
+            if not self.running:
+                return
+            reconnects += 1
+            if reconnects > self.MAX_RECONNECTS:
+                self.error.emit(STREAM_LOST)
+                return
+            self.msleep(self.RECONNECT_DELAY_MS)
 
     def stop(self) -> None:
         safe_stop(self)
