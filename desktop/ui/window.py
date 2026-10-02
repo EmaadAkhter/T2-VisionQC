@@ -25,6 +25,7 @@ from desktop.theme import ACCENT, MUTED
 NAV_ITEMS = [
     ("inspect", "🔍  Inspect"),
     ("train", "🎓  Train"),
+    ("profiles", "🧩  Profiles"),
     ("cameras", "📷  Cameras"),
     ("kpi", "📊  KPI"),
     ("settings", "⚙️  Settings"),
@@ -148,6 +149,10 @@ class MainWindow(QMainWindow):
         if key == "train":
             from desktop.ui.train import TrainPage
             return TrainPage(self.auth, self.org, self.statusBar())
+        if key == "profiles":
+            from desktop.ui.profiles import ProfilesPage
+            return ProfilesPage(self.auth, self.org, self.statusBar(),
+                                sync_engine=self.sync_engine)
         if key == "cameras":
             from desktop.ui.cameras import CamerasPage
             return CamerasPage(self.auth, self.org, self.statusBar(), self.edge,

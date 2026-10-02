@@ -222,12 +222,18 @@ class PatchCoreModel:
         N, C, H, W = features.shape
         return features.permute(0, 2, 3, 1).reshape(N * H * W, C)
 
-    def _score_image(self, features: torch.Tensor, bank: torch.Tensor) -> torch.Tensor:
+    def _score_image(self, features: torch.Tensor, bank: torch.Tensor,
+                     score_mask: np.ndarray | None = None) -> torch.Tensor:
         """Compute the patch anomaly map of one image against a bank.
 
         Args:
             features: (1, C, H, W)
             bank: (M, C)
+            score_mask: optional boolean mask at any resolution; patches whose
+                centre falls outside the mask are scored as zero. This is the
+                canonical product region: missing parts inside it still produce
+                anomalies, which is why the adaptive per-frame mask is never
+                used here.
         Returns:
             (H, W) tensor of patch distances
         """
@@ -235,10 +241,18 @@ class PatchCoreModel:
         points = self._features_to_points(features)         # (H*W, C)
         dists = torch.cdist(points, bank)                   # (H*W, M)
         min_dists = dists.min(dim=1)[0]                     # (H*W,)
-        return min_dists.reshape(H, W)
+        patch_map = min_dists.reshape(H, W)
+        if score_mask is not None:
+            resized = cv2.resize(
+                score_mask.astype(np.uint8), (W, H),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+            patch_map = patch_map * torch.from_numpy(resized.astype(np.float32))
+        return patch_map
 
     def fit(self, image_paths: List[str],
-            holdout_indices: Optional[List[int]] = None) -> Dict[str, Any]:
+            holdout_indices: Optional[List[int]] = None,
+            score_mask: np.ndarray | None = None) -> Dict[str, Any]:
         """Train the model on good images.
 
         1. Split off holdout images.
@@ -246,6 +260,9 @@ class PatchCoreModel:
         3. Compute raw scores of holdout images against that bank;
            ref = max over holdout images (worst good unit sits at 0.50).
         4. Rebuild the final memory bank on all images.
+
+        `score_mask` restricts reference scoring to the canonical product
+        region so the normalisation matches runtime scoring.
         """
         if len(image_paths) < MIN_TRAIN_IMAGES:
             raise ValueError(
@@ -256,8 +273,11 @@ class PatchCoreModel:
         np.random.seed(RANDOM_SEED)
 
         if holdout_indices is None:
+            # PRD: hold out >= 20% (minimum 5) for the reference score.
+            # Small onboarding sets degrade gracefully: always keep at least
+            # 3 images for the memory bank and at least 1 holdout.
             n_holdout = max(MIN_TRAIN_IMAGES, int(round(len(image_paths) * 0.2)))
-            n_holdout = min(n_holdout, len(image_paths) - MIN_TRAIN_IMAGES)
+            n_holdout = min(n_holdout, max(1, len(image_paths) - 3))
             indices = list(range(len(image_paths)))
             np.random.shuffle(indices)
             holdout_indices = sorted(indices[:n_holdout])
@@ -275,7 +295,8 @@ class PatchCoreModel:
         # Reference score: worst holdout good image against the preliminary bank
         ref_scores = []
         for i in holdout_indices:
-            patch_map = self._score_image(all_features[i:i + 1], prelim_bank)
+            patch_map = self._score_image(all_features[i:i + 1], prelim_bank,
+                                          score_mask=score_mask)
             ref_scores.append(float(patch_map.max()))
         self.ref_score = max(ref_scores) if ref_scores else 1.0
         if self.ref_score <= 0:
@@ -333,9 +354,12 @@ class PatchCoreModel:
 
     # -- inference ----------------------------------------------------------
 
-    def predict(self, image_bgr: np.ndarray) -> Dict[str, Any]:
+    def predict(self, image_bgr: np.ndarray,
+                score_mask: np.ndarray | None = None) -> Dict[str, Any]:
         """Predict anomaly score and heatmap for a single image.
 
+        `score_mask` (optional) restricts scoring to the canonical product
+        region; missing parts inside that region still raise the score.
         Returns raw_score (max of patch map), normalized_score (0-1) and
         the (H, W) anomaly map.
         """
@@ -347,7 +371,8 @@ class PatchCoreModel:
 
         with torch.no_grad():
             features = self.extract_features(tensor)          # (1, C, H, W)
-            patch_map = self._score_image(features, self.memory_bank)
+            patch_map = self._score_image(features, self.memory_bank,
+                                          score_mask=score_mask)
 
         raw_score = float(patch_map.max())
         normalized = float(np.clip(0.5 * raw_score / self.ref_score, 0.0, 1.0))

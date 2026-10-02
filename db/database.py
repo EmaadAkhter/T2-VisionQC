@@ -135,6 +135,30 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
+
+        # Product profiles: everything learned per product/camera view during
+        # onboarding (canonical mask, background model, presence regions).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_profiles (
+                id TEXT PRIMARY KEY,
+                product_id TEXT NOT NULL DEFAULT 'default',
+                camera_id TEXT,
+                name TEXT NOT NULL,
+                canonical_mask_path TEXT,
+                background_model_path TEXT,
+                presence_regions_path TEXT,
+                coverage_floor REAL DEFAULT 0.9,
+                threshold REAL DEFAULT 0.46,
+                delta REAL DEFAULT 0.05,
+                model_version TEXT,
+                ref_score REAL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                metrics_json TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_profiles_product "
+                     "ON product_profiles(product_id, status)")
         conn.execute("UPDATE inspections SET station_id = 'legacy' WHERE station_id IS NULL")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_synced ON inspections(synced)")
@@ -180,6 +204,100 @@ def get_station_id() -> str:
 def get_station_code() -> str:
     """Short station code used in inspection UIDs (4 chars, upper-case)."""
     return get_station_id().rsplit("-", 1)[-1].upper()
+
+
+# ---------------------------------------------------------------------------
+# Product profiles
+# ---------------------------------------------------------------------------
+
+def save_profile(profile: Dict[str, Any]) -> str:
+    """Insert or update a product profile. Returns the profile id."""
+    import json as _json
+    import uuid
+
+    profile_id = profile.get("id") or uuid.uuid4().hex
+    metrics = profile.get("metrics")
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO product_profiles (
+                id, product_id, camera_id, name, canonical_mask_path,
+                background_model_path, presence_regions_path, coverage_floor,
+                threshold, delta, model_version, ref_score, status,
+                metrics_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                profile_id,
+                profile.get("product_id", "default"),
+                profile.get("camera_id"),
+                profile.get("name", "Profile"),
+                profile.get("canonical_mask_path"),
+                profile.get("background_model_path"),
+                profile.get("presence_regions_path"),
+                profile.get("coverage_floor", 0.9),
+                profile.get("threshold", 0.46),
+                profile.get("delta", 0.05),
+                profile.get("model_version"),
+                profile.get("ref_score"),
+                profile.get("status", "draft"),
+                _json.dumps(metrics) if metrics else None,
+                profile.get("created_at")
+                or time.strftime("%Y-%m-%dT%H:%M:%S"),
+            ),
+        )
+    return profile_id
+
+
+def get_profile(profile_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM product_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_profiles(product_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        if product_id:
+            cursor = conn.execute(
+                "SELECT * FROM product_profiles WHERE product_id = ? "
+                "ORDER BY created_at DESC",
+                (product_id,),
+            )
+        else:
+            cursor = conn.execute(
+                "SELECT * FROM product_profiles ORDER BY created_at DESC"
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_active_profile(product_id: str = "default") -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM product_profiles WHERE product_id = ? "
+            "AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+            (product_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def activate_profile(profile_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE product_profiles SET status = 'draft' WHERE product_id = "
+            "(SELECT product_id FROM product_profiles WHERE id = ?)",
+            (profile_id,),
+        )
+        conn.execute(
+            "UPDATE product_profiles SET status = 'active' WHERE id = ?",
+            (profile_id,),
+        )
+
+
+def delete_profile(profile_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM product_profiles WHERE id = ?", (profile_id,))
 
 
 # ---------------------------------------------------------------------------

@@ -238,9 +238,11 @@ class InspectPage(QWidget):
                                 "Train a model on the Train page first.")
             return
         settings = db.get_settings()
+        artifacts = self.model_store.artifacts()
         self.inspect_button.setEnabled(False)
         self.inspect_button.setText("Analysing…")
-        worker = FunctionWorker(run_inspection, self.pending_image, model, settings)
+        worker = FunctionWorker(run_inspection, self.pending_image, model,
+                                settings, artifacts)
         worker.finished_ok.connect(lambda result: self._show_result(result, model))
         worker.failed.connect(self._inspect_failed)
         self._inspect_worker = worker
@@ -254,6 +256,19 @@ class InspectPage(QWidget):
     def _show_result(self, result: dict, model) -> None:
         self.inspect_button.setEnabled(True)
         self.inspect_button.setText("Inspect")
+
+        if result.get("no_product"):
+            self.verdict_label.setText("NO PRODUCT")
+            self.verdict_label.setStyleSheet(
+                "color: #64748b; font-size: 26px; font-weight: 700;"
+            )
+            self.explanation_label.setText(
+                "No product detected in the expected region. Adjust the unit "
+                "or the camera and capture again — nothing was logged."
+            )
+            self.review_row_widget.setVisible(False)
+            self.status_bar.showMessage("No product — not logged", 4000)
+            return
 
         verdict = result["verdict"]
         color = VERDICT_COLORS[verdict]

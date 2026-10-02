@@ -77,13 +77,19 @@ class LineCameraWorker(QThread):
                 from db import database as db
 
                 settings = db.get_settings()
+                artifacts = self.model_store.artifacts()
                 with self.inference_lock:
-                    result = run_inspection(frame, model, settings)
-                    uid = log_inspection(
-                        result, frame, model.model_version,
-                        camera_id=self.camera["id"],
-                    )
-                self.result_ready.emit(self.camera["id"], frame, result, uid)
+                    result = run_inspection(frame, model, settings, artifacts)
+                    if result.get("no_product"):
+                        self.result_ready.emit(self.camera["id"], frame,
+                                               result, "")
+                    else:
+                        uid = log_inspection(
+                            result, frame, model.model_version,
+                            camera_id=self.camera["id"],
+                        )
+                        self.result_ready.emit(self.camera["id"], frame,
+                                               result, uid)
             except Exception as exc:  # noqa: BLE001
                 self.error.emit(self.camera["id"], str(exc))
             self.msleep(int(self.interval_s * 1000))
@@ -406,14 +412,16 @@ class CamerasPage(QWidget):
             return
         tile["thumb"].setPixmap(bgr_to_pixmap(frame, 260, 160))
         color = VERDICT_COLORS.get(result["verdict"], "#0f172a")
-        tile["verdict"].setText(f"{result['verdict']} · {uid[-4:]}")
+        suffix = uid[-4:] if uid else "no product"
+        tile["verdict"].setText(f"{result['verdict']} · {suffix}")
         tile["verdict"].setStyleSheet(f"color: {color}; font-weight: 700;")
         tile["score"].setText(
             f"score {result['score']:.2f} · {result['latency_ms']} ms"
         )
-        self.status_bar.showMessage(f"{uid} logged from line camera", 2000)
-        if self.sync_engine is not None:
-            self.sync_engine.kick()
+        if uid:
+            self.status_bar.showMessage(f"{uid} logged from line camera", 2000)
+            if self.sync_engine is not None:
+                self.sync_engine.kick()
 
     def _on_line_error(self, camera_id: str, message: str) -> None:
         tile = self.line_tiles.get(camera_id)

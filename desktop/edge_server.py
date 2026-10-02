@@ -113,8 +113,27 @@ class EdgeServer:
                 raise HTTPException(status_code=409, detail="No active model")
 
             settings = db.get_settings()
+            artifacts = self.model_store.artifacts()
             with self._infer_lock:
-                result = run_inspection(image, model, settings)
+                result = run_inspection(image, model, settings, artifacts)
+
+            if result.get("no_product"):
+                return JSONResponse({
+                    "uid": "",
+                    "device": device["name"],
+                    "verdict": "NO_PRODUCT",
+                    "score": result["score"],
+                    "certainty": result["certainty"],
+                    "explanation": (
+                        "No product detected in the expected region. "
+                        "Adjust the unit or camera and try again."
+                    ),
+                    "setup_status": result["setup_status"],
+                    "latency_ms": result["latency_ms"],
+                    "heatmap_jpeg_b64": "",
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                })
+
             uid = log_inspection(result, image, model.model_version, source="edge")
 
             heatmap_ok, heatmap_buf = cv2.imencode(
