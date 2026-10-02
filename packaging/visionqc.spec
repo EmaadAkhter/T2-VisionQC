@@ -5,6 +5,7 @@
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
+    collect_all,
     collect_data_files,
     collect_dynamic_libs,
     collect_submodules,
@@ -49,13 +50,19 @@ for package in (
         pass
 
 # torchvision registers custom ops (torchvision::nms) in its compiled
-# extension; without these the frozen app crashes at import time with
-# "operator torchvision::nms does not exist".
-hiddenimports += ["torchvision._C", "torchvision.extension"]
+# extension; PyInstaller's hook does not reliably collect them for recent
+# torchvision releases, so collect the whole package explicitly.
 try:
-    binaries += collect_dynamic_libs("torchvision")
+    tv_datas, tv_binaries, tv_hidden = collect_all("torchvision")
+    datas += tv_datas
+    binaries += tv_binaries
+    hiddenimports += tv_hidden
 except Exception:  # noqa: BLE001
-    pass
+    hiddenimports += ["torchvision._C", "torchvision.extension"]
+    try:
+        binaries += collect_dynamic_libs("torchvision")
+    except Exception:  # noqa: BLE001
+        pass
 
 datas += collect_data_files("qrcode")
 

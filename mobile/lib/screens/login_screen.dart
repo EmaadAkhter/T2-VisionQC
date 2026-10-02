@@ -16,6 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _password = TextEditingController(text: 'visionqc123');
   final _name = TextEditingController();
   bool _busy = false;
+  bool _signedIn = false;
   String? _error;
   List<Map<String, dynamic>> _orgs = [];
 
@@ -29,12 +30,26 @@ class _LoginScreenState extends State<LoginScreen> {
         email: _email.text.trim(),
         password: _password.text,
       );
+      // Admins grant access from the web console; claim any pending
+      // invitation for this account, then use the assigned organization.
+      try {
+        await Supabase.instance.client.rpc('claim_invitations');
+      } catch (_) {
+        // Older server without the RPC: continue with existing memberships.
+      }
       final rows = await Supabase.instance.client
           .from('my_orgs')
           .select()
           .order('name');
+      final orgs = List<Map<String, dynamic>>.from(rows);
+      if (orgs.length == 1) {
+        if (!mounted) return;
+        _continueToPairing(orgs.first);
+        return;
+      }
       setState(() {
-        _orgs = List<Map<String, dynamic>>.from(rows);
+        _orgs = orgs;
+        _signedIn = true;
       });
     } catch (error) {
       setState(() => _error = '$error');
@@ -139,6 +154,14 @@ class _LoginScreenState extends State<LoginScreen> {
                     onPressed: _busy ? null : _signUp,
                     child: const Text('Create account'),
                   ),
+                  if (_signedIn && _orgs.isEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'No access yet. Ask your administrator to invite you '
+                      'from the VisionQC web console, then sign in again.',
+                      style: TextStyle(color: Colors.black54),
+                    ),
+                  ],
                   if (_orgs.isNotEmpty) ...[
                     const SizedBox(height: 24),
                     const Text('Choose organization',
