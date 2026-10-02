@@ -75,6 +75,42 @@ def run_smoke() -> int:
     return 0
 
 
+def run_selftest() -> int:
+    """Exercise bundled weights + training + inference with synthetic images."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    import paths
+
+    bundled = paths.ensure_torch_home()
+    from db import database as db
+
+    db.init_db()
+    from service.inference import PatchCoreModel
+
+    with tempfile.TemporaryDirectory() as tmp:
+        image_paths = []
+        for index in range(6):
+            rng = np.random.default_rng(index)
+            image = rng.integers(80, 160, (320, 320, 3), dtype=np.uint8)
+            path = Path(tmp) / f"selftest_{index}.png"
+            cv2.imwrite(str(path), image)
+            image_paths.append(str(path))
+        model = PatchCoreModel()
+        stats = model.fit(image_paths)
+        prediction = model.predict(cv2.imread(image_paths[0]))
+
+    print(
+        f"selftest ok | weights={'bundled' if bundled else 'cache'} "
+        f"| bank={stats['memory_bank_size']} "
+        f"| score={prediction['normalized_score']:.3f}"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     early = _apply_args(argv)
@@ -82,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         return early
     if "--smoke" in argv:
         return run_smoke()
+    if "--selftest" in argv:
+        return run_selftest()
 
     import paths
 

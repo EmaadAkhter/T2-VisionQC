@@ -86,6 +86,7 @@ jobs:
           fi
           "$BIN" --version
           "$BIN" --smoke
+          "$BIN" --selftest
 
       - name: Package artifact
         shell: bash
