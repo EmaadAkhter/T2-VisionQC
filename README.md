@@ -49,11 +49,12 @@ assistant for small manufacturers who cannot afford a machine-vision integrator
 or build a labelled defect dataset. It learns "normal" from 20-30 photos of good
 units and scores each new unit live from a webcam or phone camera, showing where
 the deviation is (heatmap), a confidence score and a PASS/REVIEW/FAIL decision
-against a supervisor-tunable threshold. Every inspection is logged, so the
-supervisor sees today's rejection rate and can review borderline units. The
-platform spans a native desktop app with local CPU inference, a Flutter
-phone-camera companion, a React admin console and a Supabase control plane, and
-it keeps running offline after setup.
+against a supervisor-tunable threshold. A second learned signal catches missing
+components — such as a peeled-off label on a transparent bottle — even when the
+anomaly score alone would pass, and every inspection is logged for the
+supervisor's rejection-rate dashboard. The platform spans a native desktop app
+with local CPU inference, a Flutter phone-camera companion, a React admin
+console and a Supabase control plane, and it keeps running offline after setup.
 
 ## GitHub Repository
 
@@ -68,6 +69,9 @@ VisionQC gives a small factory a working visual inspection station without a
 machine-vision integrator, a GPU or a labelled defect dataset. The operator
 photographs 20-30 good units once; the system builds a PatchCore "memory bank"
 of normal appearance and then scores every new unit in ~100 ms on a laptop CPU.
+A second, learned component check catches missing coloured components (e.g. a
+peeled-off label on a transparent bottle) even when the anomaly score alone
+would pass.
 
 It was benchmarked against the standard MVTec AD industrial anomaly-detection
 dataset: **mean image-level AUROC 0.976**, **90.5% defect recall** and **0.9%
@@ -83,6 +87,10 @@ console, local cloud schema, benchmark tooling and test suite.
   in ~100 ms on CPU
 - **Explainable results**: Plain-language explanations with defect location,
   area and intensity, plus a heatmap overlay
+- **Learned component check**: On transparent products, a missing label or
+  component fails the unit even when the anomaly score alone would pass —
+  calibrated from the same good photos (25/25 good PASS, 75/75
+  component-removed FAIL in validation)
 - **Decision certainty**: High / Medium / Low certainty rating (a heuristic,
   not a probability)
 - **Threshold tuning**: Adjustable threshold with an impact preview over recent
@@ -94,7 +102,10 @@ console, local cloud schema, benchmark tooling and test suite.
 - **Dashboard**: Today's rejection rate, pending reviews, filterable history,
   CSV export
 - **Phone camera as a sensor**: Pair an Android phone once and stream live
-  frames from the line; frames stay on the LAN
+  frames from the line into the Inspect tab or the multi-camera grid; frames
+  stay on the LAN
+- **Multi-camera dashboard**: Watch every relayed phone/edge camera in one grid
+  and assign models per camera
 - **Role-based access**: Organizations, invitations and roles are managed in
   the web console; row-level security isolates every organization's data
 - **Fully offline**: No internet required after setup
@@ -104,7 +115,7 @@ console, local cloud schema, benchmark tooling and test suite.
 | Layer | Technology |
 | --- | --- |
 | Desktop app | Python 3.10+, PySide6 (Qt 6) |
-| Anomaly detection | PyTorch (CPU-only), timm, PatchCore coreset memory bank, DINOv2 ViT-S/14 and WideResNet-50 backbones, OpenCV, NumPy, Pillow |
+| Anomaly detection | PyTorch (CPU-only), timm, PatchCore coreset memory bank, DINOv2 ViT-S/14 and WideResNet-50 backbones, learned component-presence check, OpenCV, NumPy, Pillow |
 | Local edge storage | SQLite (WAL) with sync outbox |
 | Cloud control plane | Supabase — PostgreSQL, Auth, Row-Level Security, Storage (Docker for local, or hosted) |
 | Web admin console | React 19, Vite, `@supabase/supabase-js` |
@@ -132,23 +143,28 @@ USB / RTSP cameras ────────────────────�
 1. **Onboard** — the operator captures 20-30 good units (optional background
    frames) and approves one product mask; a product profile is created.
 2. **Train** — PatchCore extracts patch features and builds a coreset memory
-   bank of normal appearance (seconds on a laptop CPU).
+   bank of normal appearance (seconds on a laptop CPU); the component check is
+   calibrated from the same good photos.
 3. **Inspect** — live frames from a webcam, an uploaded image or a paired
    phone; every patch is compared against the memory bank and the maximum
    distance becomes the anomaly score.
 4. **Decide** — score + tunable threshold/review band → PASS / REVIEW / FAIL,
-   with heatmap, location, area and a plain-language explanation.
+   with heatmap, location, area and a plain-language explanation. The learned
+   component check can fail a unit on its own (e.g. a missing label) and
+   escalates to REVIEW in its mid band.
 5. **Log & sync** — every inspection is stored locally (SQLite) with evidence,
    then synced idempotently to Supabase; the KPI page shows today's numbers.
 
 Platform components:
 
 - **Desktop** (`desktop/`): sign in, create/join an organization, train models,
-  inspect from webcam/upload, register cameras, live KPI, cloud sync.
+  inspect from webcam/upload/phone, register cameras, watch the multi-camera
+  grid, live KPI, cloud sync.
 - **Mobile** (`mobile/`): Flutter companion. Open the app, scan the QR code
   (or enter the address + pairing code) shown on the desktop Cameras page, then
   stream the phone camera continuously; verdicts and heatmaps come back from
-  the desktop.
+  the desktop. On the desktop the phone appears as a selectable camera in the
+  **Inspect** tab and as a tile in the **Multi-camera** grid.
 - **Cloud** (`supabase/`): schema, row-level security and seed data. Runs
   locally via Docker or against a hosted Supabase project
   (`python3 tools/write_supabase_env.py --hosted`).
@@ -179,6 +195,13 @@ Platform components:
 4. **Verdict**: PASS / REVIEW / FAIL from the threshold and review band.
 5. **Explanation**: The anomaly map yields location (3x3 grid), area %, and
    intensity — never a defect type (it learns normal only, by design).
+6. **Component check (second learned signal)**: saturation-weighted hue
+   clustering of the good photos learns the product's coloured component; the
+   minimum expected pixel fraction is calibrated against synthesized
+   component-removed frames (inpaint / fill / cap-only). Below the learned
+   limit the unit FAILs regardless of the anomaly score; a mid band becomes
+   REVIEW. The check self-disables when the distributions do not separate
+   (e.g. bare metal), and legacy checkpoints load with it disabled.
 
 ## Setup & Installation
 
@@ -241,14 +264,16 @@ switcher.
 web at the hosted project.
 
 **Desktop workflow:** sign in with email + password (access comes from the web
-console) → **Train** on 20-30 good images → **Inspect** with webcam/upload →
-**Cameras** to register line cameras and pair phones → **KPI** to see today's
-numbers. Inspections sync to the cloud automatically (retry/backoff; evidence
-upload policy in Settings).
+console) → **Train** on 20-30 good images → **Inspect** with
+webcam/upload/paired phone → **Cameras** to register line cameras and pair
+phones → **Multi-camera** to watch every relayed camera in one grid → **KPI**
+to see today's numbers. Inspections sync to the cloud automatically
+(retry/backoff; evidence upload policy in Settings).
 
 **Mobile workflow:** open the app → scan the QR code on the desktop Cameras
 page (or enter the address + 6-digit pairing code) → continuous streaming with
-verdict, score, explanation and heatmap.
+verdict, score, explanation and heatmap; select **Phone camera** on the desktop
+Inspect tab to drive live inspection from the phone.
 
 **Desktop packaging:** macOS builds ship as a **DMG** (drag to Applications);
 Windows as a zip. Both are produced by
@@ -312,8 +337,10 @@ The relay server ships with a Dockerfile and `docker-compose.yml` in
 
 ### Desktop app (PySide6)
 
-![Inspect — live PASS/REVIEW/FAIL verdicts and recent inspections](images/desktop_inspect.png)
-*Inspect — live inference from webcam/upload with an audit log of recent verdicts.*
+![Inspect — live phone-camera feed with FAIL verdict, learned component check and heatmap](images/desktop_inspect.png)
+*Live example — the Inspect tab streams from a paired phone; the unit fails the
+learned component check (missing label) even though the anomaly score (0.33) is
+below the 0.46 threshold. The heatmap and recent verdicts are shown alongside.*
 
 ![Train — upload 20-30 good-unit photos](images/desktop_train.png)
 *Train — normal-only onboarding; model versions are kept and switchable.*
@@ -331,7 +358,7 @@ with location, area %, intensity and a plain-language explanation.*
 | Sign-in | Settings |
 | --- | --- |
 | ![Sign-in](images/desktop_login.png) | ![Settings](images/desktop_settings.png) |
-| Email + password; access is managed in the web console. | Threshold + review band, local data, cloud sync and evidence policy. |
+| Email + password; access is managed in the web console. | Threshold + review band, learned component checks, local data, cloud sync and evidence policy. |
 
 ### Web admin console (React)
 
@@ -379,6 +406,18 @@ Details, method and the honest eight-image bottle findings:
 Product-flow check: a model trained on **25 good bottle images** caught
 **12/12 defects** with **0/18 false rejects** on held-out units.
 
+### Learned component check validation
+
+The second signal is validated end-to-end by
+`tools/validate_component_check.py` (all gates must pass):
+
+| Gate | Result |
+| --- | --- |
+| Good training images with the check enabled | 25/25 PASS (0 FAIL) |
+| Synthesized component-removed frames (inpaint / fill / cap-only) | 75/75 FAIL |
+| Legacy behavior with the check disabled | unchanged |
+| Live-pipeline p95 latency | 203 ms (limit 250 ms) |
+
 ## Real-world bottle segmentation POC
 
 Eight labelled WhatsApp images are preserved in `data/poc/raw/`. Initial
@@ -410,6 +449,7 @@ Optional dependencies for these experiments are listed in
 pytest tests/test_core.py -v            # inference/logic unit + integration tests
 python3 tools/test_rls.py               # auth, roles, tenant isolation (needs supabase start)
 python3 tools/test_sync.py              # sync: duplicates, retries, evidence, stations
+python3 tools/validate_component_check.py  # learned component-check gates
 QT_QPA_PLATFORM=offscreen python3 -m desktop.launcher --smoke   # desktop pages construct
 cd mobile && flutter analyze && flutter test                    # mobile app
 python3 tests/test_mvtec.py --all --root data/mvtec_hf          # MVTec AD benchmark
@@ -423,6 +463,7 @@ Defaults (changeable in the UI):
 | --- | --- | --- |
 | Threshold | 0.46 | Decision boundary, tuned on MVTec AD (see BENCHMARK.md) |
 | Review band | ±0.05 | Range around threshold that yields REVIEW |
+| Component check | On (learned) | Supervisor toggle for the learned presence check; turn off only if the product has no such component |
 | Min training images | 5 | Minimum for a model; 20-30 recommended |
 | Input size | 320x320 | Internal model input resolution |
 
@@ -436,7 +477,9 @@ Defaults (changeable in the UI):
 - Screw-type micro-defects are the known weak spot of this configuration
   (see BENCHMARK.md caveats).
 - Transparent or reflective parts need a controlled fixture; generic
-  segmentation is still a POC (see above).
+  segmentation is still a POC (see above). The learned component check covers
+  missing coloured components (e.g. a peeled label), not arbitrary geometry
+  changes.
 - Not integrated with PLCs, reject arms or ERP systems (roadmap only).
 - Windows installer is unsigned; iOS build requires a full Xcode setup.
 
