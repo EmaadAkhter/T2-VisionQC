@@ -5,12 +5,20 @@ border-color fallback proposes the mask), then runs all eight images through
 the profile-driven pipeline. Reports verdicts, missing-region fractions and
 honest counts. No product-specific logic is used.
 
+By default the run mirrors the desktop wizard exactly: clutter-guarded
+presence regions (inside the approved mask, never pinned to the frame border,
+with a fill-fraction fallback) and the derived coverage floor. Pass --tuned to
+reproduce the historical relaxed parameters (regions at 0.8 fill, floor 0.6,
+no clutter guards) that the earlier 3/3 number used.
+
 Usage:
-    python3 tools/validate_poc8.py
+    python3 tools/validate_poc8.py            # app-faithful
+    python3 tools/validate_poc8.py --tuned    # historical relaxed params
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -34,6 +42,8 @@ from service.foreground import (  # noqa: E402
     mask_metrics,
     presence_regions,
     proposal_from_frames,
+    proposal_quality_warnings,
+    propose_presence_regions,
 )
 from service.backbones import engine_display_name, resolve_default_engine  # noqa: E402
 from service.inference import PatchCoreModel  # noqa: E402
@@ -43,6 +53,14 @@ MANIFEST = json.loads((POC / "manifest.json").read_text())
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--tuned", action="store_true",
+        help="historical relaxed region params (0.8 fill, floor 0.6, no "
+             "clutter guards)",
+    )
+    args = parser.parse_args()
+
     db.init_db()
     entries = MANIFEST["images"]
     good = [POC / e["file"] for e in entries if e["condition"] == "good"]
@@ -52,18 +70,32 @@ def main() -> int:
     # 1. Proposal from good frames only (border fallback: no empty scene).
     proposal = proposal_from_frames(good_frames, background=None)
     fg_masks = [foreground_from_border(f) for f in good_frames]
-    # Small, colored regions (label, cap) are stable in most frames; the
-    # default 0.95 coverage finds nothing on this noisy five-image set.
-    regions = presence_regions(fg_masks, min_fraction=0.8,
-                               min_area_fraction=0.005)
 
-    print("=== Profile proposal ===")
+    if args.tuned:
+        regions = presence_regions(fg_masks, min_fraction=0.8,
+                                   min_area_fraction=0.005)
+        used_fraction = 0.8
+        coverage_floor = 0.6
+    else:
+        regions, used_fraction = propose_presence_regions(
+            fg_masks, approved_mask=proposal)
+        coverage_floor = (0.9 if used_fraction is None
+                          else max(0.5, round(used_fraction - 0.2, 2)))
+    warnings = proposal_quality_warnings(fg_masks, proposal, regions,
+                                         used_fraction)
+
+    mode = "tuned relaxed params" if args.tuned else "app-faithful"
+    print(f"=== Profile proposal [{mode}] ===")
     print(f"good frames: {len(good)} | mask area: {proposal.mean():.1%} | "
-          f"presence regions: {regions.mean():.2%}")
+          f"presence regions: {regions.mean():.2%} | "
+          f"fill: {used_fraction if used_fraction is not None else '-'} | "
+          f"floor: {coverage_floor}")
+    for warning in warnings:
+        print(f"  warning: {warning}")
 
     # 2. Train with masked reference scoring (current default engine).
-    backbone, kwargs = resolve_default_engine(len(good))
-    model = PatchCoreModel(backbone=backbone, backbone_kwargs=kwargs)
+    backbone, engine_kwargs = resolve_default_engine(len(good))
+    model = PatchCoreModel(backbone=backbone, backbone_kwargs=engine_kwargs)
     stats = model.fit([str(p) for p in good], score_mask=proposal)
     model_path = Path(TMP_DATA) / "models" / f"{stats['model_version']}.pt"
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +132,7 @@ def main() -> int:
         "name": "POC bottle",
         "canonical_mask_path": str(mask_path),
         "presence_regions_path": str(regions_path),
-        "coverage_floor": 0.6,
+        "coverage_floor": coverage_floor,
         "threshold": 0.50,
         "delta": 0.05,
         "model_version": stats["model_version"],
@@ -119,7 +151,6 @@ def main() -> int:
     print("\n=== Per-image results (profile-driven) ===")
     print(f"{'image':<10} {'expected':<26} {'verdict':<10} {'score':>6} "
           f"{'missing':>8} {'no_product':>10}")
-    flagged = {"good": 0, "defect": 0}
     false_fails = 0
     caught = 0
     for entry in entries:

@@ -45,8 +45,9 @@ from service.foreground import (
     background_false_activation,
     foreground_from_border,
     mask_metrics,
-    presence_regions,
     proposal_from_frames,
+    proposal_quality_warnings,
+    propose_presence_regions,
 )
 from service.inference import INPUT_SIZE, PatchCoreModel
 from service.backbones import engine_display_name, resolve_default_engine
@@ -85,12 +86,22 @@ def propose_mask_job(bg_folder: str, good_folder: str) -> dict:
         fg_masks = [background.foreground_mask(f) for f in good_frames]
     else:
         fg_masks = [foreground_from_border(f) for f in good_frames]
-    regions = presence_regions(fg_masks)
+    # Clutter-guarded regions: only inside the approved mask, never pinned to
+    # the frame border, with a fallback when the default fill is too strict.
+    regions, used_fraction = propose_presence_regions(
+        fg_masks, approved_mask=proposal)
+    coverage_floor = (0.9 if used_fraction is None
+                      else max(0.5, round(used_fraction - 0.2, 2)))
+    warnings = proposal_quality_warnings(
+        fg_masks, proposal, regions, used_fraction)
 
     return {
         "background": background,
         "proposal": proposal,
         "regions": regions,
+        "used_min_fraction": used_fraction,
+        "coverage_floor": coverage_floor,
+        "warnings": warnings,
         "good_paths": [path for path, _ in good],
         "sample": good[0][1],
     }
@@ -101,13 +112,18 @@ def build_profile_job(name: str, camera_id: str | None, good_paths: list[str],
                       regions: np.ndarray | None,
                       proposal: np.ndarray | None,
                       threshold: float = 0.50,
-                      delta: float = 0.05) -> dict:
+                      delta: float = 0.05,
+                      coverage_floor: float = 0.9) -> dict:
     """Train the model, save artifacts and activate the profile.
 
     Default threshold 0.50: the worst held-out good image sits at 0.50 by
     construction of the normalisation. The review band (0.45–0.55) keeps a
     margin below that line, so near-limit units on small onboarding sets are
     reviewed instead of passed. Editable per profile.
+
+    ``coverage_floor`` comes from the region proposal (fill fraction minus a
+    margin); it is the runtime coverage below which a presence region counts
+    as missing.
     """
     profile_id = uuid.uuid4().hex
     art_dir = paths.data_dir() / "profiles" / profile_id
@@ -175,7 +191,7 @@ def build_profile_job(name: str, camera_id: str | None, good_paths: list[str],
         "canonical_mask_path": str(mask_path),
         "background_model_path": str(background_path) if background_path else None,
         "presence_regions_path": str(regions_path) if regions_path else None,
-        "coverage_floor": 0.9,
+        "coverage_floor": coverage_floor,
         "threshold": threshold,
         "delta": delta,
         "model_version": model.model_version,
@@ -200,6 +216,7 @@ class ProfileWizard(QDialog):
         self.proposal: np.ndarray | None = None
         self.regions: np.ndarray | None = None
         self.approved: np.ndarray | None = None
+        self.coverage_floor = 0.9
         self.good_paths: list[str] = []
         self.sample: np.ndarray | None = None
         self.worker: FunctionWorker | None = None
@@ -314,16 +331,20 @@ class ProfileWizard(QDialog):
         self.background = result["background"]
         self.proposal = result["proposal"]
         self.regions = result["regions"]
+        self.coverage_floor = result.get("coverage_floor", 0.9)
         self.good_paths = result["good_paths"]
         self.sample = result["sample"]
         self.approved = self.proposal.copy()
         self.edit_button.setEnabled(True)
         self.build_button.setEnabled(True)
         self._render_preview()
-        self.status.setText(
-            f"Proposal ready · {len(self.good_paths)} good images · "
-            f"mask {self.proposal.mean():.1%} of frame"
-        )
+        status = (f"Proposal ready · {len(self.good_paths)} good images · "
+                  f"mask {self.proposal.mean():.1%} of frame")
+        if self.regions is not None and self.regions.any():
+            status += f" · regions {self.regions.mean():.1%}"
+        for warning in result.get("warnings", []):
+            status += f"\n⚠ {warning}"
+        self.status.setText(status)
 
     def _render_preview(self) -> None:
         if self.sample is None or self.approved is None:
@@ -342,6 +363,12 @@ class ProfileWizard(QDialog):
             cv2.CHAIN_APPROX_SIMPLE,
         )
         cv2.drawContours(overlay, contours, -1, (255, 40, 40), 2)
+        if self.regions is not None and self.regions.any():
+            region_contours, _ = cv2.findContours(
+                (self.regions.astype(np.uint8) * 255), cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            cv2.drawContours(overlay, region_contours, -1, (0, 215, 255), 1)
         self.preview.setPixmap(bgr_to_pixmap(overlay, 420, 260))
 
     def _edit_mask(self) -> None:
@@ -370,6 +397,7 @@ class ProfileWizard(QDialog):
             build_profile_job, name, self.camera_combo.currentData(),
             list(self.good_paths), self.approved.copy(), self.background,
             self.regions, self.proposal,
+            coverage_floor=self.coverage_floor,
         )
         self.worker.finished_ok.connect(self._built)
         self.worker.failed.connect(self._failed)

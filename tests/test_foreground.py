@@ -12,6 +12,8 @@ from service.foreground import (
     missing_region_fraction,
     presence_regions,
     proposal_from_frames,
+    proposal_quality_warnings,
+    propose_presence_regions,
     region_coverage,
 )
 
@@ -140,3 +142,76 @@ class TestCleanup:
         assert cleaned[150, 150]            # hole filled
         assert not cleaned[12, 12]          # speck dropped
         assert cleaned[150, 120]            # body kept
+
+    def test_border_barrier_does_not_swallow_frame(self):
+        # A bar that touches the top and bottom edges partitions the
+        # background. The half that the flood seed cannot reach must stay
+        # background; before the padding fix it was filled as a "hole"
+        # (a 2% mask turned into 100%).
+        mask = np.zeros((SIZE, SIZE), dtype=np.uint8)
+        mask[:, 100:120] = 1
+        cleaned = cleanup_mask(mask)
+        assert cleaned.mean() < 0.10, cleaned.mean()
+        assert cleaned[160, 110]            # the bar is kept
+        assert not cleaned[160, 200]        # trapped background is not filled
+
+
+class TestProposePresenceRegions:
+    def test_drops_border_clutter(self):
+        good = []
+        for _ in range(6):
+            frame = _rect_mask(100, 100, 220, 220)
+            frame[0:40, 0:40] = True        # clutter touching the corner
+            good.append(frame)
+        regions, used = propose_presence_regions(
+            good, approved_mask=np.ones((SIZE, SIZE), dtype=bool))
+        assert used == 0.95
+        assert regions[160, 160]
+        assert not regions[20, 20]
+
+    def test_falls_back_when_fill_is_too_strict(self):
+        good = [_rect_mask(100, 100, 220, 220) for _ in range(4)]
+        good.append(_rect_mask(10, 10, 60, 60))   # product elsewhere
+        regions, used = propose_presence_regions(good, approved_mask=None)
+        assert used == 0.8
+        assert regions[160, 160]
+
+    def test_empty_when_nothing_is_stable(self):
+        good = [_rect_mask(10 + i * 50, 10, 60 + i * 50, 60)
+                for i in range(5)]
+        regions, used = propose_presence_regions(good)
+        assert used is None
+        assert not regions.any()
+
+    def test_intersects_with_approved_mask(self):
+        good = [_rect_mask(100, 100, 220, 220) for _ in range(6)]
+        approved = _rect_mask(0, 0, 160, 160)
+        regions, used = propose_presence_regions(good, approved_mask=approved)
+        assert used == 0.95
+        assert regions[120, 120]
+        assert not regions[200, 200]
+
+
+class TestProposalWarnings:
+    def test_warns_on_unstable_framing(self):
+        good = [_rect_mask(10 + i * 50, 10, 60 + i * 50, 60)
+                for i in range(5)]
+        proposal = _rect_mask(50, 50, 100, 100)
+        regions, used = propose_presence_regions(good)
+        warnings = proposal_quality_warnings(good, proposal, regions, used)
+        assert any("no stable product regions" in w for w in warnings)
+        assert any("covers only" in w for w in warnings)
+
+    def test_warns_on_invisible_frame(self):
+        good = [_rect_mask(100, 100, 220, 220) for _ in range(5)]
+        good.append(np.zeros((SIZE, SIZE), dtype=bool))   # nothing detected
+        proposal = _rect_mask(100, 100, 220, 220)
+        regions, used = propose_presence_regions(good, approved_mask=proposal)
+        warnings = proposal_quality_warnings(good, proposal, regions, used)
+        assert any("background detection is unreliable" in w for w in warnings)
+
+    def test_no_warnings_for_stable_set(self):
+        good = [_rect_mask(100, 100, 220, 220) for _ in range(6)]
+        proposal = _rect_mask(100, 100, 220, 220)
+        regions, used = propose_presence_regions(good, approved_mask=proposal)
+        assert proposal_quality_warnings(good, proposal, regions, used) == []

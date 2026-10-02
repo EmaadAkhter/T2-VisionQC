@@ -23,16 +23,18 @@ names, no fixed boxes.
    missing part cannot crop itself out of the check.
 
 Component-agnostic missing-part detection: presence regions learned from good
-frames; a coverage drop below the profile's coverage floor flags the unit
-(no color rules, no part names).
+frames, kept only inside the approved mask and never pinned to the frame
+border; a coverage drop below the profile's coverage floor flags the unit
+(no color rules, no part names). When no region is stable across the good
+frames the check is disabled and the wizard says so.
 
 ## Zero-code-change onboarding: two unrelated objects
 
 Method: 30 good images from the official MVTec train split, border-fallback
-mask (no empty-scene frames), profile threshold 0.55 (the worst held-out good
-image sits at 0.50 by construction of the normalisation), full official test
-split. These are smoke results for the *onboarding flow*, not a tuned
-benchmark.
+mask (no empty-scene frames), profile threshold 0.55 (these runs predate the
+0.50 default; the worst held-out good image sits at 0.50 by construction of
+the normalisation), full official test split. These are smoke results for the
+*onboarding flow*, not a tuned benchmark.
 
 ### metal_nut — a metal part (nothing like a bottle)
 
@@ -61,40 +63,52 @@ benchmark.
 | Defects caught (REVIEW+FAIL) | **70/70 (100%)** |
 
 Score separation (hazelnut): good p50 0.46 / p90 0.49 / max 0.52 vs defects
-p10 0.58 / p50 0.63 — which is why the profile default threshold is 0.55.
+p10 0.58 / p50 0.63. The profile default threshold is now 0.50 (band
+0.45–0.55): small onboarding sets need the margin below the worst-good line.
 
 ## The eight bottle images (honest smoke result)
 
 Five good photos, three labelled missing-part photos, **no background frames**,
 transparent product on a pale backdrop. Built with the border fallback.
 
-| Image | Expected | Verdict | Missing-region signal |
-| --- | --- | --- | --- |
-| 1–5 | good | PASS (5/5) | 0–3.5% |
-| 6 | cap missing | **FAIL** | 100% |
-| 7 | sticker missing | PASS | 0% |
-| 8 | cap + sticker missing | PASS | 0% |
+| Image | Expected | Verdict | Score | Missing-region signal |
+| --- | --- | --- | --- | --- |
+| 1–5 | good | PASS (5/5) | 0.24–0.28 | 0% |
+| 6 | cap missing | PASS | 0.39 | 0% (no region exists) |
+| 7 | sticker missing | **FAIL** | 0.62 | 0% |
+| 8 | cap + sticker missing | **REVIEW** | 0.49 | 0% (no region exists) |
 
-**Counts: 1/3 defects flagged, 0/5 false fails.**
+**Counts: 2/3 defects flagged, 0/5 false fails.**
 
 What this means honestly:
-- The **mechanism works**: the missing cap is caught purely from a learned
-  presence region (no color rules), with zero false fails.
-- The **missing sticker is not caught** on this set because five
-  varied-orientation photos do not make the sticker area a stable presence
-  region, and the reference score from two held-out images is noisy
-  (good test scores cluster at 0.35–0.39 while ref is inflated).
-- This is a data/capture problem, not a code problem: the transparent bottle
-  needs either empty-scene background frames, a fixed fixture, or more
-  onboarding images (the earlier POC reached the same conclusion).
+- The **sticker-missing unit is caught by the calibrated score** (0.62 → FAIL)
+  and the **both-missing unit sits at the review-band edge** (0.49 → REVIEW).
+  Whether it reviews or passes is decided by a ~0.01 margin.
+- The **missing cap alone is not detectable on this set**: the cap sits in a
+  different place in every photo, so it falls outside the canonical mask
+  (2.5% of the frame — label area only) and no stable presence region can
+  form. With no background frames and a transparent body, no foreground
+  signal exists for it either. The wizard now warns about exactly this
+  ("no stable product regions found", "mask covers only 3% of the frame").
+- An earlier revision reported 3/3 here. That number was an artifact of two
+  things, both now fixed:
+  1. a flood-fill bug in `cleanup_mask` that turned image 1's 6% foreground
+     into 100% (a background corner blob then became a "presence region" and
+     the missing cap "failed" on it), and
+  2. region parameters relaxed only in the test harness, not in the app.
+  With the fixes, `tools/validate_poc8.py --tuned` also reports 2/3.
+- This is a **data/capture limitation**, not a code defect: the transparent
+  bottle needs empty-scene background frames, a fixed fixture, and 20–30
+  onboarding images for the component check to work as designed.
 
 ## Reproduction
 
 ```bash
 python3 tools/validate_profile_generic.py metal_nut
 python3 tools/validate_profile_generic.py hazelnut
-python3 tools/validate_poc8.py
-python3 -m pytest tests/test_foreground.py -q      # 12 unit tests
+python3 tools/validate_poc8.py              # app-faithful (2/3 on this set)
+python3 tools/validate_poc8.py --tuned      # historical relaxed params
+python3 -m pytest tests/test_foreground.py -q      # 20 unit tests
 ```
 
 ## Next steps for production-grade generalization

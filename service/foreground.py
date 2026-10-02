@@ -51,13 +51,19 @@ def cleanup_mask(mask: np.ndarray, min_area_fraction: float = 0.005,
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
-    # Fill holes: flood-fill from the border on the inverse image.
+    # Fill holes: flood-fill from the border on the inverse image. Pad by one
+    # pixel first so background regions that touch different borders stay
+    # connected to the seed. Without the padding a foreground ring near the
+    # frame edge partitions the background and the trapped half is filled,
+    # which can blow a 5% mask up to the whole frame.
     height, width = binary.shape
     inverse = (1 - binary).astype(np.uint8)
-    flood = inverse.copy()
-    flood_mask = np.zeros((height + 2, width + 2), np.uint8)
+    padded = cv2.copyMakeBorder(inverse, 1, 1, 1, 1,
+                                cv2.BORDER_CONSTANT, value=1)
+    flood = padded.copy()
+    flood_mask = np.zeros((padded.shape[0] + 2, padded.shape[1] + 2), np.uint8)
     cv2.floodFill(flood, flood_mask, (0, 0), 0)
-    holes = flood.astype(bool)
+    holes = flood[1:-1, 1:-1].astype(bool)
     binary = (binary.astype(bool) | holes).astype(np.uint8)
 
     # Keep components above the minimum area.
@@ -209,6 +215,106 @@ def presence_regions(good_masks: Sequence[np.ndarray],
     coverage = np.mean(np.stack([m.astype(bool) for m in good_masks]), axis=0)
     return cleanup_mask(coverage >= min_fraction,
                         min_area_fraction=min_area_fraction)
+
+
+def _drop_border_components(mask: np.ndarray,
+                            margin_fraction: float = 0.02) -> np.ndarray:
+    """Remove components that touch the frame border.
+
+    Background clutter (table edges, people) enters from the frame edges; a
+    presence region pinned to the border is not trustworthy product area.
+    """
+    if not mask.any():
+        return mask
+    height, width = mask.shape
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), 8)
+    margin_x = max(1, int(round(width * margin_fraction)))
+    margin_y = max(1, int(round(height * margin_fraction)))
+    kept = np.zeros_like(mask, dtype=bool)
+    for label in range(1, count):
+        x = stats[label, cv2.CC_STAT_LEFT]
+        y = stats[label, cv2.CC_STAT_TOP]
+        w = stats[label, cv2.CC_STAT_WIDTH]
+        h = stats[label, cv2.CC_STAT_HEIGHT]
+        if (x < margin_x or y < margin_y
+                or x + w > width - margin_x or y + h > height - margin_y):
+            continue
+        kept |= labels == label
+    return kept
+
+
+def propose_presence_regions(fg_masks: Sequence[np.ndarray],
+                             approved_mask: np.ndarray | None = None,
+                             min_fraction: float = 0.95,
+                             min_area_fraction: float = 0.01,
+                             fallback_min_fractions: Sequence[float] = (
+                                 0.90, 0.85, 0.80),
+                             border_margin_fraction: float = 0.02,
+                             ) -> tuple[np.ndarray, float | None]:
+    """Presence regions with background-clutter guards.
+
+    Tries ``min_fraction`` first, then each fallback, and returns the first
+    candidate that still has regions after:
+    - intersecting with the approved canonical mask (only scored product
+      area can be "expected"), and
+    - dropping components that touch the frame border.
+
+    Returns ``(regions, used_min_fraction)``; ``used_min_fraction`` is None
+    when nothing is stable at any attempted fraction. The caller surfaces
+    that as an onboarding warning (the missing-part check is disabled).
+    """
+    if not fg_masks:
+        return np.zeros((1, 1), dtype=bool), None
+    empty = np.zeros(fg_masks[0].shape, dtype=bool)
+    for fraction in (min_fraction, *fallback_min_fractions):
+        regions = presence_regions(fg_masks, min_fraction=fraction,
+                                   min_area_fraction=min_area_fraction)
+        if approved_mask is not None:
+            regions = np.logical_and(regions, approved_mask.astype(bool))
+        regions = _drop_border_components(regions, border_margin_fraction)
+        if regions.any():
+            return regions, float(fraction)
+    return empty, None
+
+
+def proposal_quality_warnings(fg_masks: Sequence[np.ndarray],
+                              proposal: np.ndarray | None,
+                              regions: np.ndarray | None,
+                              used_min_fraction: float | None) -> list[str]:
+    """Plain-language onboarding warnings for the profile wizard.
+
+    These do not block profile creation; they tell the operator why the
+    component-level checks will be weak (varied framing, inconsistent
+    background, invisible product).
+    """
+    warnings: list[str] = []
+    if proposal is not None:
+        mask_area = float(proposal.mean())
+        if mask_area < 0.05:
+            warnings.append(
+                f"canonical mask covers only {mask_area:.0%} of the frame - "
+                "the product is not framed consistently"
+            )
+    if regions is None or not regions.any():
+        warnings.append(
+            "no stable product regions found - the missing-part check will "
+            "be disabled for this profile"
+        )
+    elif used_min_fraction is not None and used_min_fraction < 0.95:
+        warnings.append(
+            f"product regions are only stable in {used_min_fraction:.0%} of "
+            "the good images"
+        )
+    unreliable = [i + 1 for i, m in enumerate(fg_masks)
+                  if m.mean() < 0.01 or m.mean() > 0.75]
+    if unreliable:
+        shown = ", ".join(str(i) for i in unreliable[:5])
+        warnings.append(
+            f"background detection is unreliable for good image(s) {shown} - "
+            "use a fixed fixture or capture background frames"
+        )
+    return warnings
 
 
 def region_coverage(mask: np.ndarray, region: np.ndarray) -> float:

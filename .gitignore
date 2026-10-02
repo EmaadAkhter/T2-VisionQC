@@ -29,6 +29,9 @@ env/
 !/data/poc/manifest.json
 !/data/poc/SEGMENTATION_POC.md
 
+# Generated stability-sweep data and figures
+/results/
+
 # Databases and model artifacts, even if placed outside data/
 *.db
 *.db-*

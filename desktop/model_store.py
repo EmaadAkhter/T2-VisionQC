@@ -205,35 +205,41 @@ def run_inspection(image: np.ndarray, model: PatchCoreModel,
             if coverage < 0.02:
                 no_product = True
         if artifacts.regions is not None and artifacts.regions.sum() > 0:
-            missing_fraction = missing_region_fraction(
-                foreground, artifacts.regions, artifacts.coverage_floor
-            )
-            if missing_fraction > 0.2:
-                verdict = "FAIL"
-                certainty = "Low"
-                certainty_reason = "Expected product area is missing."
-                explanation = {
-                    "explanation": (
-                        "Expected product area missing or displaced "
-                        f"(about {missing_fraction * 100:.0f}% of the expected "
-                        "region absent). Inspect this unit."
-                    ),
-                    "region_label": explanation.get("region_label"),
-                    "area_pct": explanation.get("area_pct", 0.0),
-                }
-            elif missing_fraction > 0.05 and verdict == "PASS":
-                verdict = "REVIEW"
-                certainty = "Low"
-                certainty_reason = "Part of the expected area is not visible."
-                explanation = {
-                    "explanation": (
-                        "Part of the expected product area is not visible "
-                        f"(about {missing_fraction * 100:.0f}% absent). "
-                        "Inspect this unit."
-                    ),
-                    "region_label": explanation.get("region_label"),
-                    "area_pct": explanation.get("area_pct", 0.0),
-                }
+            # Regions only count where the product is actually scored; the
+            # operator may have edited the mask after regions were proposed.
+            expected = artifacts.regions
+            if artifacts.mask is not None and artifacts.mask.sum() > 0:
+                expected = np.logical_and(expected, artifacts.mask)
+            if expected.sum() > 0:
+                missing_fraction = missing_region_fraction(
+                    foreground, expected, artifacts.coverage_floor
+                )
+                if missing_fraction > 0.2:
+                    verdict = "FAIL"
+                    certainty = "Low"
+                    certainty_reason = "Expected product area is missing."
+                    explanation = {
+                        "explanation": (
+                            "Expected product area missing or displaced "
+                            f"(about {missing_fraction * 100:.0f}% of the "
+                            "expected region absent). Inspect this unit."
+                        ),
+                        "region_label": explanation.get("region_label"),
+                        "area_pct": explanation.get("area_pct", 0.0),
+                    }
+                elif missing_fraction > 0.05 and verdict == "PASS":
+                    verdict = "REVIEW"
+                    certainty = "Low"
+                    certainty_reason = "Part of the expected area is not visible."
+                    explanation = {
+                        "explanation": (
+                            "Part of the expected product area is not visible "
+                            f"(about {missing_fraction * 100:.0f}% absent). "
+                            "Inspect this unit."
+                        ),
+                        "region_label": explanation.get("region_label"),
+                        "area_pct": explanation.get("area_pct", 0.0),
+                    }
 
     overlay = create_overlay(image, prediction["anomaly_map"], threshold,
                              ref_score=model.ref_score)
