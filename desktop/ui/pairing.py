@@ -11,7 +11,7 @@ import time
 from io import BytesIO
 
 import httpx
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -25,6 +25,21 @@ from desktop import theme
 from desktop.ui.widgets import muted
 
 POPULAR_RELAY_URL = "https://visionqc.tavesglobal.com"
+
+
+def load_relay_settings() -> tuple[str, str]:
+    """Relay URL + dashboard token, remembered on this machine."""
+    settings = QSettings("VisionQC", "Desktop")
+    url = str(settings.value("relay/url", POPULAR_RELAY_URL)
+              or POPULAR_RELAY_URL)
+    token = str(settings.value("relay/token", "") or "")
+    return url, token
+
+
+def save_relay_settings(url: str, token: str) -> None:
+    settings = QSettings("VisionQC", "Desktop")
+    settings.setValue("relay/url", url)
+    settings.setValue("relay/token", token)
 
 
 def qr_pixmap(payload: str, size: int = 220) -> QPixmap:

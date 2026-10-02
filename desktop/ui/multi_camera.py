@@ -11,7 +11,7 @@ import os
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -30,7 +30,12 @@ from desktop import theme
 from desktop.auth import AuthService, OrgContext
 from desktop.model_store import ModelStore
 from desktop.server_client import ServerClient
-from desktop.ui.pairing import POPULAR_RELAY_URL, PairingDialog, relay_ws_url
+from desktop.ui.pairing import (
+    PairingDialog,
+    load_relay_settings,
+    relay_ws_url,
+    save_relay_settings,
+)
 from desktop.ui.widgets import (
     bgr_to_pixmap,
     card,
@@ -139,17 +144,14 @@ class MultiCameraPage(QWidget):
             "Click a tile to select it.",
         ))
 
-        settings = QSettings("VisionQC", "Desktop")
+        relay_url, relay_token = load_relay_settings()
         connection, connection_layout = card("Relay server")
         row = QHBoxLayout()
         row.setSpacing(theme.SPACE_S)
-        self.url_input = QLineEdit(
-            str(settings.value("relay/url", POPULAR_RELAY_URL)
-                or POPULAR_RELAY_URL)
-        )
+        self.url_input = QLineEdit(relay_url)
         self.url_input.setPlaceholderText("https://qc.example.com")
         row.addWidget(self.url_input, 2)
-        self.token_input = QLineEdit(str(settings.value("relay/token", "") or ""))
+        self.token_input = QLineEdit(relay_token)
         self.token_input.setPlaceholderText("Dashboard token")
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
         row.addWidget(self.token_input, 1)
@@ -219,9 +221,7 @@ class MultiCameraPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Could not connect", str(exc))
             return
-        settings = QSettings("VisionQC", "Desktop")
-        settings.setValue("relay/url", url)
-        settings.setValue("relay/token", token)
+        save_relay_settings(url, token)
         self.connect_button.setText("Disconnect")
         self._set_status("Connecting…")
 

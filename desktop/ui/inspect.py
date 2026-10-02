@@ -12,14 +12,16 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidgetItem,
@@ -32,8 +34,10 @@ from desktop import theme
 from desktop.auth import AuthService, OrgContext
 from desktop.live_logic import AutoCaptureDecider
 from desktop.model_store import ModelStore, log_inspection, run_inspection
+from desktop.server_client import ServerClient
 from desktop.ui.camera_stream import CameraStream, show_camera_error
 from desktop.ui.errors import show_error
+from desktop.ui.pairing import load_relay_settings, save_relay_settings
 from desktop.ui.widgets import (
     ScoreBar,
     VerdictBanner,
@@ -63,6 +67,17 @@ OUTLINE_CHECK_INTERVAL_S = 1.0
 _KEEP_SELECTION = object()
 
 
+def _fetch_relay_cameras(url: str, token: str) -> list[dict]:
+    """Online phone cameras on the relay (called from a worker thread)."""
+    client = ServerClient()
+    client.configure(url, token)
+    cameras = client.list_cameras()
+    online = set(client.health().get("online_cameras", []))
+    for camera in cameras:
+        camera["online"] = camera["id"] in online
+    return [camera for camera in cameras if camera["online"]]
+
+
 class InspectPage(QWidget):
     def __init__(self, auth: AuthService, org: OrgContext, status_bar,
                  sync_engine=None):
@@ -82,6 +97,8 @@ class InspectPage(QWidget):
         self.decider = AutoCaptureDecider(min_consecutive=2, cooldown_s=3.0)
         self._live_error_shown = False
         self._inspect_worker: FunctionWorker | None = None
+        self.relay_client: ServerClient | None = None
+        self._relay_worker: FunctionWorker | None = None
 
         # Cached product-outline overlay for the live preview.
         self._outline_key: tuple | None = None
@@ -93,11 +110,22 @@ class InspectPage(QWidget):
         self._on_camera_index_changed()
         self._refresh_model_status()
         self._refresh_recent()
+        # Deferred: constructing the page (smoke test, no event loop) must not
+        # leave a fetch worker running behind it.
+        QTimer.singleShot(0, self._refresh_relay_cameras)
 
     # ------------------------------------------------------------- models
 
+    def _selected_source(self) -> tuple[str, str]:
+        """("usb", index) or ("relay", camera_id) for the combo selection."""
+        data = self.camera_combo.currentData()
+        if isinstance(data, tuple) and len(data) == 2:
+            return str(data[0]), str(data[1])
+        return "usb", "0"
+
     def _camera_key(self) -> str:
-        return f"usb:{self.camera_combo.currentData()}"
+        kind, ident = self._selected_source()
+        return f"{kind}:{ident}"
 
     def _refresh_model_combo(self, select_version=_KEEP_SELECTION) -> None:
         """Rebuild the model picker, keeping or applying a selection.
@@ -181,10 +209,20 @@ class InspectPage(QWidget):
         controls.addWidget(self.model_combo)
 
         self.camera_combo = QComboBox()
-        self.camera_combo.addItem("Camera 0 (built-in)", 0)
-        self.camera_combo.addItem("Camera 1", 1)
+        self.camera_combo.setToolTip(
+            "Local USB cameras and online phone cameras on the relay."
+        )
+        self.camera_combo.addItem("Camera 0 (built-in)", ("usb", "0"))
+        self.camera_combo.addItem("Camera 1", ("usb", "1"))
         self.camera_combo.currentIndexChanged.connect(self._on_camera_index_changed)
         controls.addWidget(self.camera_combo)
+
+        self.relay_refresh = QPushButton("Relay cameras")
+        self.relay_refresh.setToolTip(
+            "Find phone cameras that are online on the relay server"
+        )
+        self.relay_refresh.clicked.connect(self._refresh_relay_cameras)
+        controls.addWidget(self.relay_refresh)
 
         self.camera_button = QPushButton("Start live inspection")
         self.camera_button.clicked.connect(self._toggle_camera)
@@ -267,7 +305,7 @@ class InspectPage(QWidget):
     # ----------------------------------------------------------------- camera
 
     def _toggle_camera(self) -> None:
-        if self.stream is not None:
+        if self.stream is not None or self.relay_client is not None:
             self._stop_camera()
             return
         # Pick up models trained since this page was built.
@@ -276,16 +314,54 @@ class InspectPage(QWidget):
             QMessageBox.warning(self, "No model",
                                 "Train a model on the Train page first.")
             return
-        index = self.camera_combo.currentData()
-        self.stream = CameraStream("usb", str(index))
+        kind, ident = self._selected_source()
+        if kind == "relay":
+            self._start_relay(ident)
+            return
+        self.stream = CameraStream("usb", ident)
         self.stream.opened.connect(self._on_camera_opened)
         self.stream.frame_ready.connect(self._on_frame)
         self.stream.error.connect(
-            lambda kind, address=str(index): self._on_stream_error(kind, address)
+            lambda kind, address=ident: self._on_stream_error(kind, address)
         )
         self.camera_button.setEnabled(False)
         self.camera_button.setText("Starting…")
         self.stream.start()
+
+    def _start_relay(self, camera_id: str) -> None:
+        """Subscribe to a phone camera on the relay and inspect its frames."""
+        url, token = load_relay_settings()
+        if not token:
+            resolved = self._ask_relay_settings()
+            if resolved is None:
+                return
+            url, token = resolved
+        client = ServerClient()
+        client.configure(url, token)
+        client.connected.connect(self._on_camera_opened)
+        client.disconnected.connect(self._on_relay_disconnected)
+        client.frame_received.connect(
+            lambda cid, jpeg, expected=camera_id:
+                self._on_relay_frame(expected, cid, jpeg)
+        )
+        self.relay_client = client
+        self.camera_button.setEnabled(False)
+        self.camera_button.setText("Connecting…")
+        self.live_status.setText(
+            f"Connecting to {self.camera_combo.currentText()}…"
+        )
+        client.start()
+
+    def _on_relay_frame(self, expected_id: str, camera_id: str,
+                        jpeg: bytes) -> None:
+        if expected_id != camera_id:
+            return
+        frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if frame is not None:
+            self._on_frame(frame)
+
+    def _on_relay_disconnected(self, reason: str) -> None:
+        self.status_bar.showMessage(f"Relay connection problem: {reason}", 5000)
 
     def _on_camera_opened(self) -> None:
         model = self._selected_model()
@@ -332,9 +408,77 @@ class InspectPage(QWidget):
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
+        if self.relay_client is not None:
+            self.relay_client.stop()
+            self.relay_client = None
         self.camera_button.setEnabled(True)
         self.camera_button.setText("Start live inspection")
         self.log_button.setEnabled(False)
+
+    # -------------------------------------------------------------- relay list
+
+    def _refresh_relay_cameras(self, *_args) -> None:
+        """Fetch online phone cameras; ask for the token on explicit refresh."""
+        url, token = load_relay_settings()
+        if not token:
+            if self.sender() is not self.relay_refresh:
+                return
+            resolved = self._ask_relay_settings()
+            if resolved is None:
+                return
+            url, token = resolved
+        worker = FunctionWorker(_fetch_relay_cameras, url, token)
+        worker.finished_ok.connect(self._render_camera_combo)
+        worker.failed.connect(self._relay_list_failed)
+        self._relay_worker = worker
+        worker.start()
+
+    def _relay_list_failed(self, trace: str) -> None:
+        last = trace.strip().splitlines()[-1] if trace.strip() else ""
+        self.status_bar.showMessage(
+            f"Could not list relay cameras: {last}", 5000
+        )
+
+    def _render_camera_combo(self, cameras: list) -> None:
+        current = self.camera_combo.currentData()
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.clear()
+        self.camera_combo.addItem("Camera 0 (built-in)", ("usb", "0"))
+        self.camera_combo.addItem("Camera 1", ("usb", "1"))
+        if cameras:
+            self.camera_combo.insertSeparator(self.camera_combo.count())
+            for camera in cameras:
+                label = f"{camera.get('name') or camera['id']} (phone)"
+                self.camera_combo.addItem(label, ("relay", camera["id"]))
+        for index in range(self.camera_combo.count()):
+            if self.camera_combo.itemData(index) == current:
+                self.camera_combo.setCurrentIndex(index)
+                break
+        self.camera_combo.blockSignals(False)
+        self._on_camera_index_changed()
+        if cameras:
+            self.status_bar.showMessage(
+                f"{len(cameras)} phone camera(s) online", 3000
+            )
+
+    def _ask_relay_settings(self) -> tuple[str, str] | None:
+        url, token = load_relay_settings()
+        url, ok = QInputDialog.getText(
+            self, "Relay server", "Relay server URL:", text=url
+        )
+        if not ok:
+            return None
+        token, ok = QInputDialog.getText(
+            self, "Dashboard token", "Dashboard token:",
+            QLineEdit.EchoMode.Password, token,
+        )
+        if not ok:
+            return None
+        url, token = url.strip(), token.strip()
+        if not url or not token:
+            return None
+        save_relay_settings(url, token)
+        return url, token
 
     def on_leave(self) -> None:
         """Stop live capture when the user navigates away."""

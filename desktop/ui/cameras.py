@@ -11,7 +11,7 @@ import threading
 import time
 
 import cv2
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -46,7 +46,12 @@ from desktop.ui.camera_stream import (
     safe_stop,
     show_camera_error,
 )
-from desktop.ui.pairing import POPULAR_RELAY_URL, PairingDialog, relay_ws_url
+from desktop.ui.pairing import (
+    PairingDialog,
+    load_relay_settings,
+    relay_ws_url,
+    save_relay_settings,
+)
 from desktop.ui.widgets import (
     CollapsibleSection,
     bgr_to_pixmap,
@@ -138,16 +143,13 @@ class PhonePairDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Connect phone")
         self.setMinimumWidth(460)
-        settings = QSettings("VisionQC", "Desktop")
+        relay_url, relay_token = load_relay_settings()
 
         form = QFormLayout(self)
-        self.url_input = QLineEdit(
-            str(settings.value("relay/url", POPULAR_RELAY_URL)
-                or POPULAR_RELAY_URL)
-        )
+        self.url_input = QLineEdit(relay_url)
         form.addRow("Relay server", self.url_input)
 
-        self.token_input = QLineEdit(str(settings.value("relay/token", "") or ""))
+        self.token_input = QLineEdit(relay_token)
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("Dashboard token", self.token_input)
 
@@ -691,9 +693,7 @@ class CamerasPage(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         url, token, name = dialog.values()
-        settings = QSettings("VisionQC", "Desktop")
-        settings.setValue("relay/url", url)
-        settings.setValue("relay/token", token)
+        save_relay_settings(url, token)
 
         client = ServerClient()
         client.configure(url, token)
