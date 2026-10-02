@@ -4,6 +4,9 @@ Offline visual inspection assistant for small manufacturers. Learns "normal"
 from 20-30 good photos using unsupervised anomaly detection (PatchCore) — no
 defect dataset needed.
 
+[![Desktop build](https://github.com/EmaadAkhter/Techforge-VisionQC/actions/workflows/desktop-build.yml/badge.svg)](https://github.com/EmaadAkhter/Techforge-VisionQC/actions/workflows/desktop-build.yml)
+[![Backend tests](https://github.com/EmaadAkhter/Techforge-VisionQC/actions/workflows/backend-tests.yml/badge.svg)](https://github.com/EmaadAkhter/Techforge-VisionQC/actions/workflows/backend-tests.yml)
+
 ## Features
 
 - **Normal-only training**: Upload 20-30 good unit photos, get a working model
@@ -137,6 +140,20 @@ anomaly-detection dataset (15 categories, official test splits):
 | Inference latency (CPU) | median 100 ms | < 500 ms |
 
 Full per-category tables, methodology and caveats: **[BENCHMARK.md](BENCHMARK.md)**
+
+### Generalized onboarding (any product, zero code changes)
+
+A product profile is built from the operator's own captures (background
+frames optional, 20–30 good units, one approved mask). Zero-code-change smoke
+results on unrelated MVTec objects:
+
+| Object | AUROC | Good units | Defects caught |
+| --- | ---: | ---: | ---: |
+| metal_nut | 0.999 | 22/22 PASS | 93/93 (100%) |
+| hazelnut | 1.000 | 38/40 PASS (0 failed) | 70/70 (100%) |
+
+Details, method and the honest eight-image bottle findings:
+**[docs/GENERALIZATION_RESULTS.md](docs/GENERALIZATION_RESULTS.md)**
 
 Product-flow check: a model trained on **25 good bottle images** caught
 **12/12 defects** with **0/18 false rejects** on held-out units.
