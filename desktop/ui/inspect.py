@@ -230,14 +230,14 @@ class InspectPage(QWidget):
         self.detail_label = caption("")
         layout.addWidget(self.detail_label)
 
-        self.heatmap_label = QLabel("Heatmap appears here during live inspection")
-        self.heatmap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.heatmap_label.setMinimumHeight(230)
-        self.heatmap_label.setStyleSheet(
+        self.overlay_label = QLabel("Heatmap appears here during live inspection")
+        self.overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.overlay_label.setMinimumHeight(230)
+        self.overlay_label.setStyleSheet(
             f"background: {theme.SIDEBAR_BG}; color: {theme.SIDEBAR_TEXT}; "
             f"border-radius: {theme.RADIUS_CONTROL}px;"
         )
-        layout.addWidget(self.heatmap_label, 1)
+        layout.addWidget(self.overlay_label, 1)
 
         review_row = QHBoxLayout()
         review_row.setSpacing(theme.SPACE_S)
@@ -403,7 +403,7 @@ class InspectPage(QWidget):
             self.score_bar.set_score(None)
             self.explanation_label.setText("")
             self.detail_label.setText("")
-            self.heatmap_label.setText("No product in view")
+            self.overlay_label.setText("No product in view")
             self.decider.update("REVIEW")
             return
         self.latest_result = result
@@ -441,7 +441,7 @@ class InspectPage(QWidget):
         details.append(f"Setup {result['setup_status']}")
         details.append(f"{result['latency_ms']} ms")
         self.detail_label.setText(" · ".join(details))
-        self.heatmap_label.setPixmap(
+        self.overlay_label.setPixmap(
             rgb_to_pixmap(result["overlay"], 460, 320)
         )
         self.review_widget.setVisible(verdict == "REVIEW")

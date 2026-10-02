@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
 
     def _create_page(self, key: str) -> QWidget:
         if key == "inspect":
-            from desktop.ui.inspect import InspectPage
+            from desktop.ui.station import StationPage as InspectPage
             return InspectPage(self.auth, self.org, self.statusBar(),
                                sync_engine=self.sync_engine)
         if key == "train":

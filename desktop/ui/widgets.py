@@ -1,7 +1,9 @@
 """Shared Qt components for a consistent, professional UI.
 
 All colors/sizes come from desktop.theme. Pages should use these components
-instead of ad-hoc styling.
+instead of ad-hoc styling. ScoreBar and VerdictBanner are re-exported here so
+pages keep importing them from desktop.ui.widgets; their implementations live
+in desktop.ui.signature.
 """
 
 from __future__ import annotations
@@ -9,18 +11,18 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
-    QHBoxLayout,
     QLabel,
-    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from desktop import theme
+from desktop.ui.signature import ToleranceStrip as ScoreBar
+from desktop.ui.signature import VerdictBanner
 
 
 # ---------------------------------------------------------------------------
@@ -118,127 +120,6 @@ def status_dot(color: str) -> QLabel:
 # ---------------------------------------------------------------------------
 # Result components
 # ---------------------------------------------------------------------------
-
-class VerdictBanner(QFrame):
-    """Unmissable verdict block: large label, next action, certainty."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("VerdictBanner")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(16)
-
-        self.verdict_label = QLabel("—")
-        self.verdict_label.setObjectName("Metric")
-        layout.addWidget(self.verdict_label, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        text_column = QVBoxLayout()
-        text_column.setSpacing(2)
-        self.action_label = QLabel("")
-        self.action_label.setWordWrap(True)
-        self.action_label.setStyleSheet(f"color: {theme.TEXT};")
-        self.certainty_label = QLabel("")
-        self.certainty_label.setObjectName("Caption")
-        text_column.addWidget(self.action_label)
-        text_column.addWidget(self.certainty_label)
-        layout.addLayout(text_column, 1)
-
-        self.set_result("NONE", "")
-
-    def set_result(self, verdict: str, action: str, certainty: str = "") -> None:
-        if verdict in theme.VERDICT_COLORS:
-            color = theme.VERDICT_COLORS[verdict]
-            background = theme.VERDICT_BACKGROUNDS[verdict]
-        else:
-            color, background = theme.MUTED, "#F3F4F6"
-        self.verdict_label.setText(verdict if verdict != "NONE" else "—")
-        self.verdict_label.setStyleSheet(
-            f"color: {color}; font-size: {theme.VERDICT_SIZE}px; "
-            f"font-weight: {theme.VERDICT_WEIGHT};"
-        )
-        self.action_label.setText(action)
-        self.certainty_label.setText(certainty)
-        self.setStyleSheet(
-            f"QFrame#VerdictBanner {{ background: {background}; "
-            f"border: 1px solid {color}33; border-left: 4px solid {color}; "
-            f"border-radius: {theme.RADIUS_CARD}px; }}"
-        )
-
-
-class ScoreBar(QWidget):
-    """Score track with pass/review/fail zones and a threshold marker."""
-
-    def __init__(self, threshold: float = 0.46, delta: float = 0.05,
-                 parent=None):
-        super().__init__(parent)
-        self.threshold = threshold
-        self.delta = delta
-        self.score: float | None = None
-        self.setMinimumHeight(46)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def set_score(self, score: float | None, threshold: float | None = None,
-                  delta: float | None = None) -> None:
-        self.score = score
-        if threshold is not None:
-            self.threshold = threshold
-        if delta is not None:
-            self.delta = delta
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width = self.width()
-        track_y, track_h = 6, 16
-
-        def x_of(value: float) -> int:
-            return max(0, min(width, int(value * width)))
-
-        low = max(0.0, self.threshold - self.delta)
-        high = min(1.0, self.threshold + self.delta)
-
-        painter.fillRect(0, track_y, width, track_h, QColor(theme.BORDER))
-        painter.fillRect(0, track_y, x_of(low), track_h, QColor(theme.PASS_BG))
-        painter.fillRect(x_of(high), track_y, width - x_of(high), track_h,
-                         QColor(theme.FAIL_BG))
-        painter.fillRect(x_of(low), track_y, x_of(high) - x_of(low), track_h,
-                         QColor(theme.REVIEW_BG))
-
-        if self.score is not None:
-            color = QColor(theme.ACCENT)
-            if self.score >= high:
-                color = QColor(theme.FAIL)
-            elif self.score >= low:
-                color = QColor(theme.REVIEW)
-            else:
-                color = QColor(theme.PASS)
-            painter.fillRect(0, track_y, x_of(self.score), track_h, color)
-
-        painter.setPen(QColor(theme.TEXT))
-        painter.fillRect(x_of(self.threshold) - 1, track_y - 4, 2, track_h + 8,
-                         QColor(theme.TEXT))
-
-        painter.setPen(QColor(theme.MUTED))
-        small = QFont(self.font())
-        small.setPointSize(9)
-        painter.setFont(small)
-        painter.drawText(0, 42, f"0")
-        painter.drawText(width - 14, 42, "1")
-        label = f"threshold {self.threshold:.2f} · band ±{self.delta:.2f}"
-        painter.drawText(x_of(self.threshold) - 70, 42, label)
-
-        if self.score is not None:
-            painter.setPen(QColor(theme.TEXT))
-            bold = QFont(self.font())
-            bold.setPointSize(12)
-            bold.setBold(True)
-            painter.setFont(bold)
-            text = f"{self.score:.2f}"
-            metrics = painter.fontMetrics()
-            painter.drawText(width - metrics.horizontalAdvance(text), 14, text)
-
 
 class MetricTile(QFrame):
     """Compact metric: big value over a label."""
