@@ -32,6 +32,9 @@ env/
 # Generated stability-sweep data and figures
 /results/
 
+# Relay server runtime state (SQLite, uploaded models, downloads)
+/server-data/
+
 # Databases and model artifacts, even if placed outside data/
 *.db
 *.db-*

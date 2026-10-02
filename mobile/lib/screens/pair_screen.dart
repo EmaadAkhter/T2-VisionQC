@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../services/edge_client.dart';
+import 'relay_pair_screen.dart';
 import 'stream_screen.dart';
 
 /// Pair this phone with the edge workstation on the factory LAN.
@@ -136,6 +137,26 @@ class _PairScreenState extends State<PairScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Text('Pair and open camera'),
+              ),
+              const SizedBox(height: 20),
+              const Divider(),
+              const SizedBox(height: 8),
+              const Text(
+                'Off-site? Stream this phone through the cloud relay instead '
+                '(server operator provides the camera ID and API key).',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const RelayPairScreen(),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.cloud_outlined),
+                label: const Text('Use the cloud relay'),
               ),
               const SizedBox(height: 24),
               FutureBuilder<String>(

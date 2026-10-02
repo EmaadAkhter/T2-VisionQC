@@ -43,9 +43,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.staticfiles import StaticFiles
 
 DATA_DIR = Path(os.environ.get("VISIONQC_SERVER_DATA", "server-data"))
 MODELS_DIR = DATA_DIR / "models"
+DOWNLOADS_DIR = DATA_DIR / "downloads"
 DB_PATH = DATA_DIR / "server.db"
 DASHBOARD_TOKEN = os.environ.get("VISIONQC_DASHBOARD_TOKEN", "dev-token")
 RELAY_FPS = float(os.environ.get("VISIONQC_RELAY_FPS", "5"))
@@ -251,11 +253,14 @@ def _require_dashboard(token: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="VisionQC Relay", version="0.1.0")
+app.mount("/download", StaticFiles(directory=str(DOWNLOADS_DIR), check_dir=False),
+          name="downloads")
 
 
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/health")
