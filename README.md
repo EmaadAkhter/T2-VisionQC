@@ -232,10 +232,16 @@ VisionQC/
 │   ├── main.py               # entry point
 │   ├── auth.py               # Supabase auth + org membership
 │   ├── edge_server.py        # LAN frame intake for the phone app
-│   ├── model_store.py        # model loading + inspection pipeline
+│   ├── sync.py               # automatic cloud sync (retry, evidence)
+│   ├── model_store.py        # model loading + profile-aware inspection
 │   ├── theme.py              # shared styling
 │   ├── smoke_test.py         # offscreen UI construction test
-│   └── ui/                   # login, window, inspect, train, cameras, kpi, settings
+│   └── ui/                   # login, window, inspect, train, profiles,
+│                             # cameras, kpi, settings, mask editor
+├── admin-web/                # Vite + React admin console (access control)
+│   └── src/
+│       ├── App.jsx           # sign-up/in, org, members, invites, cameras
+│       └── lib/supabase.js
 ├── mobile/                   # Flutter companion app
 │   └── lib/
 │       ├── main.dart

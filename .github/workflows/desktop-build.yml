@@ -34,6 +34,7 @@ jobs:
           - os: windows-latest
             suffix: windows-x64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +79,7 @@ jobs:
 
       - name: Smoke test (offscreen, exit code)
         shell: bash
+        timeout-minutes: 10
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
             BIN="dist/VisionQC/VisionQC.exe"

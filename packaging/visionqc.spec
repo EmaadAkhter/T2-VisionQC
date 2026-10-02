@@ -4,12 +4,17 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 SPEC_DIR = Path(SPECPATH).resolve()
 ROOT = SPEC_DIR.parent
 
 datas = []
+binaries = []
 
 # Bundled torch weights (offline first run). Optional for source builds.
 weights_dir = ROOT / "packaging" / "weights" / "torch_home"
@@ -43,6 +48,15 @@ for package in (
     except Exception:  # package not installed in this environment
         pass
 
+# torchvision registers custom ops (torchvision::nms) in its compiled
+# extension; without these the frozen app crashes at import time with
+# "operator torchvision::nms does not exist".
+hiddenimports += ["torchvision._C", "torchvision.extension"]
+try:
+    binaries += collect_dynamic_libs("torchvision")
+except Exception:  # noqa: BLE001
+    pass
+
 datas += collect_data_files("qrcode")
 
 excludes = [
@@ -61,7 +75,7 @@ excludes = [
 a = Analysis(
     [str(ROOT / "desktop" / "launcher.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -84,7 +98,9 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    disable_windowed_traceback=False,
+    # Never show a blocking error dialog in CI/headless runs; exit with the
+    # error code instead.
+    disable_windowed_traceback=True,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
