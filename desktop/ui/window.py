@@ -20,15 +20,15 @@ from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.edge_server import EdgeServer
 from desktop.sync import SyncEngine
-from desktop.theme import ACCENT, MUTED
+from desktop import theme
 
 NAV_ITEMS = [
-    ("inspect", "🔍  Inspect"),
-    ("train", "🎓  Train"),
-    ("profiles", "🧩  Profiles"),
-    ("cameras", "📷  Cameras"),
-    ("kpi", "📊  KPI"),
-    ("settings", "⚙️  Settings"),
+    ("inspect", "Inspect"),
+    ("train", "Train"),
+    ("profiles", "Profiles"),
+    ("cameras", "Cameras"),
+    ("kpi", "KPI"),
+    ("settings", "Settings"),
 ]
 
 ROLE_LABELS = {
@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
 
         if len(self.orgs) > 1:
             self.org_combo = QComboBox()
+            self.org_combo.setObjectName("SidebarCombo")
             for org in self.orgs:
                 self.org_combo.addItem(org.org_name, org)
             index = next(
@@ -125,13 +126,13 @@ class MainWindow(QMainWindow):
             self.org_combo.currentIndexChanged.connect(self._switch_org)
             layout.addWidget(self.org_combo)
             self.org_label = QLabel("")
-            self.org_label.setObjectName("SidebarOrg")
+            self.org_label.setObjectName("SidebarMuted")
             self.org_label.setWordWrap(True)
             layout.addWidget(self.org_label)
         else:
             self.org_combo = None
             self.org_label = QLabel("")
-            self.org_label.setObjectName("SidebarOrg")
+            self.org_label.setObjectName("SidebarMuted")
             self.org_label.setWordWrap(True)
             layout.addWidget(self.org_label)
         self._refresh_org_label()
@@ -150,7 +151,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
 
         self.user_label = QLabel(self.auth.user_email or "")
-        self.user_label.setObjectName("SidebarOrg")
+        self.user_label.setObjectName("SidebarMuted")
         self.user_label.setWordWrap(True)
         layout.addWidget(self.user_label)
 
@@ -173,6 +174,7 @@ class MainWindow(QMainWindow):
         if org.org_id == self.org.org_id:
             return
         self.org = org
+        self.auth.remember_org(org.org_id)
         self._refresh_org_label()
         self._bind_org(org)
         self._rebuild_pages()
@@ -226,12 +228,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ status bar
 
     def _build_status_bar(self) -> None:
+        from desktop.ui.widgets import status_dot
+
         bar = QStatusBar()
         self.setStatusBar(bar)
-        self.online_label = QLabel("● offline")
+
+        self.online_dot = status_dot(theme.MUTED)
+        self.online_label = QLabel("offline")
+        bar.addWidget(self.online_dot)
+        bar.addWidget(self.online_label)
+
         self.sync_label = QLabel("Sync: idle")
         self.model_label = QLabel("Model: none")
-        bar.addWidget(self.online_label)
         bar.addPermanentWidget(self.model_label)
         bar.addPermanentWidget(self.sync_label)
         self.refresh_model_label()
@@ -243,10 +251,10 @@ class MainWindow(QMainWindow):
 
     def _on_sync_state(self, state: str) -> None:
         colors = {
-            "idle": "#16a34a",
-            "syncing": "#2563eb",
-            "offline": "#d97706",
-            "error": "#dc2626",
+            "idle": theme.PASS,
+            "syncing": theme.ACCENT,
+            "offline": theme.REVIEW,
+            "error": theme.FAIL,
         }
         labels = {
             "idle": "Sync: idle",
@@ -256,7 +264,7 @@ class MainWindow(QMainWindow):
         }
         self.sync_label.setText(labels.get(state, f"Sync: {state}"))
         self.sync_label.setStyleSheet(
-            f"color: {colors.get(state, '#64748b')};"
+            f"color: {colors.get(state, theme.MUTED)};"
         )
 
     def _on_sync_progress(self, info: dict) -> None:
@@ -277,9 +285,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_online(self) -> None:
         online = self.auth.is_online()
-        self.online_label.setText("● online" if online else "● offline")
-        self.online_label.setStyleSheet(
-            f"color: {'#16a34a' if online else '#d97706'};"
+        self.online_label.setText("online" if online else "offline")
+        self.online_dot.setStyleSheet(
+            f"background: {theme.PASS if online else theme.REVIEW}; "
+            "border-radius: 4px;"
         )
 
     def _sign_out(self) -> None:

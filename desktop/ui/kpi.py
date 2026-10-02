@@ -5,22 +5,28 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from db import database as db
+from desktop import theme
 from desktop.auth import AuthService, OrgContext
-from desktop.theme import VERDICT_COLORS
-from desktop.ui.widgets import card, muted
+from desktop.ui.widgets import (
+    MetricTile,
+    caption,
+    card,
+    make_table,
+    muted,
+    page_header,
+)
 from desktop.worker import FunctionWorker
 
 
@@ -77,17 +83,17 @@ class KpiPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
+                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setSpacing(theme.SPACE_M)
 
         header = QHBoxLayout()
-        title = QLabel("KPI")
-        title.setObjectName("Title")
-        header.addWidget(title)
-        header.addStretch(1)
-        self.sync_status = muted("")
-        header.addWidget(self.sync_status)
-        self.sync_button = QPushButton("Sync to cloud")
+        header.addWidget(page_header(
+            "KPI", "Today's numbers from this machine; sync shares them"
+        ), 1)
+        self.sync_status = caption("")
+        header.addWidget(self.sync_status, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.sync_button = QPushButton("Sync now")
         self.sync_button.setObjectName("Primary")
         self.sync_button.clicked.connect(self._sync)
         header.addWidget(self.sync_button)
@@ -96,21 +102,29 @@ class KpiPage(QWidget):
         header.addWidget(refresh)
         root.addLayout(header)
 
-        self.date_label = muted("")
+        self.date_label = caption("")
         root.addWidget(self.date_label)
 
-        tiles_card, tiles_layout = card()
-        self.tiles_grid = QGridLayout()
-        tiles_layout.addLayout(self.tiles_grid)
-        root.addWidget(tiles_card)
+        tiles_row = QHBoxLayout()
+        tiles_row.setSpacing(theme.SPACE_M)
+        self.tiles: dict[str, MetricTile] = {}
+        for key, label in [
+            ("total", "Inspected"),
+            ("passed", "Passed"),
+            ("failed", "Failed"),
+            ("pending", "Pending review"),
+            ("rejection", "Rejection rate"),
+        ]:
+            tile = MetricTile(label)
+            self.tiles[key] = tile
+            tiles_row.addWidget(tile)
+        root.addLayout(tiles_row)
 
         table_card, table_layout = card("Recent inspections")
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(
-            ["Time", "UID", "Score", "Verdict", "Disposition", "Certainty", "Explanation"]
+        self.table = make_table(
+            ["Time", "Inspection", "Score", "Verdict", "Disposition",
+             "Certainty", "Explanation"]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table_layout.addWidget(self.table)
         root.addWidget(table_card, 1)
 
@@ -119,37 +133,21 @@ class KpiPage(QWidget):
     def refresh(self) -> None:
         today = datetime.now().strftime("%Y-%m-%d")
         stats = db.get_dashboard_stats(today)
-        self.date_label.setText(f"Today · {today} (local machine day)")
+        self.date_label.setText(f"Local calendar day · {today}")
 
-        while self.tiles_grid.count():
-            item = self.tiles_grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+        self.tiles["total"].set_value(str(stats["total"]))
+        self.tiles["passed"].set_value(str(stats["passed"]), theme.PASS)
+        self.tiles["failed"].set_value(str(stats["failed"]), theme.FAIL)
+        self.tiles["pending"].set_value(str(stats["pending_review"]), theme.REVIEW)
         rejection = stats["rejection_rate"]
-        tiles = [
-            ("Inspected", str(stats["total"]), "#0f172a"),
-            ("Passed", str(stats["passed"]), VERDICT_COLORS["PASS"]),
-            ("Failed", str(stats["failed"]), VERDICT_COLORS["FAIL"]),
-            ("Pending review", str(stats["pending_review"]), VERDICT_COLORS["REVIEW"]),
-            (
-                "Rejection rate",
-                "—" if rejection is None else f"{rejection:.1%}",
-                "#0f172a",
-            ),
-        ]
-        for col, (label, value, color) in enumerate(tiles):
-            name = QLabel(label)
-            name.setObjectName("Muted")
-            value_label = QLabel(value)
-            value_label.setObjectName("Metric")
-            value_label.setStyleSheet(f"color: {color};")
-            self.tiles_grid.addWidget(name, 0, col)
-            self.tiles_grid.addWidget(value_label, 1, col)
+        self.tiles["rejection"].set_value(
+            "—" if rejection is None else f"{rejection:.1%}"
+        )
 
         unsynced = db.count_unsynced_inspections()
         self.sync_status.setText(
-            f"{unsynced} inspection(s) waiting to sync" if unsynced else "All synced"
+            f"{unsynced} inspection(s) waiting to sync" if unsynced
+            else "All synced"
         )
 
         rows = db.get_inspections(limit=25)
@@ -162,13 +160,12 @@ class KpiPage(QWidget):
                 row.get("verdict", ""),
                 row.get("disposition", ""),
                 row.get("certainty", ""),
-                (row.get("explanation") or "")[:60],
+                (row.get("explanation") or "")[:70],
             ]
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
-                if col == 3:
-                    item.setForeground(Qt.GlobalColor.black)
-                    item.setData(Qt.ItemDataRole.ForegroundRole, None)
+                if col == 3 and text in theme.VERDICT_COLORS:
+                    item.setForeground(QColor(theme.VERDICT_COLORS[text]))
                 self.table.setItem(row_idx, col, item)
         self.table.resizeColumnsToContents()
 

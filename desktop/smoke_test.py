@@ -20,13 +20,14 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from db import database as db  # noqa: E402
 from desktop.auth import AuthService  # noqa: E402
 from desktop.config import load_config  # noqa: E402
-from desktop.theme import STYLESHEET  # noqa: E402
+from desktop.theme import STYLESHEET, apply_app_font  # noqa: E402
 from desktop.ui.login import LoginWindow  # noqa: E402
 from desktop.ui.window import MainWindow  # noqa: E402
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    apply_app_font(app)
     app.setStyleSheet(STYLESHEET)
     db.init_db()
 

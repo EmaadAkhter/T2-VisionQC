@@ -36,7 +36,8 @@ import paths
 from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.ui.mask_editor import MaskEditorDialog
-from desktop.ui.widgets import bgr_to_pixmap, card, muted
+from desktop import theme
+from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
 from desktop.worker import FunctionWorker
 from service.foreground import (
     BackgroundModel,
@@ -397,33 +398,26 @@ class ProfilesPage(QWidget):
         self.sync_engine = sync_engine
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
+                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setSpacing(theme.SPACE_M)
 
         header = QHBoxLayout()
-        title = QLabel("Product profiles")
-        title.setObjectName("Title")
-        header.addWidget(title)
-        header.addStretch(1)
+        header.addWidget(page_header(
+            "Product profiles",
+            "One profile per product/camera view. The mask is approved once "
+            "during onboarding; runtime is fully automatic.",
+        ), 1)
         new_button = QPushButton("New profile…")
         new_button.setObjectName("Primary")
         new_button.clicked.connect(self._new_profile)
         header.addWidget(new_button)
         root.addLayout(header)
-        root.addWidget(muted(
-            "One profile per product/camera view. Onboarding approves a mask "
-            "once; runtime is automatic. Activate a profile to use it on the "
-            "Inspect page and line monitoring."
-        ))
 
         table_card, table_layout = card()
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(
+        self.table = make_table(
             ["Name", "Status", "Model", "Images", "Mask IoU", "Created"]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table_layout.addWidget(self.table)
 
         buttons = QHBoxLayout()

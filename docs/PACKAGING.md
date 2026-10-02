@@ -49,15 +49,25 @@ mkdir -p packaging/weights/torch_home/hub/checkpoints
 cp ~/.cache/torch/hub/checkpoints/wide_resnet50_2-9ba9bcbe.pth \
    packaging/weights/torch_home/hub/checkpoints/
 
+# Regenerate the app icon if needed (macOS)
+python3 packaging/make_icon.py
+
 pyinstaller --clean --noconfirm packaging/visionqc.spec
 
 # Verify without a display
-dist/VisionQC/VisionQC --version
-dist/VisionQC/VisionQC --smoke
+dist/VisionQC.app/Contents/MacOS/VisionQC --version   # macOS
+dist/VisionQC.app/Contents/MacOS/VisionQC --smoke
+dist/VisionQC.app/Contents/MacOS/VisionQC --selftest
+
+# Build the DMG (macOS)
+codesign --force --deep --sign - dist/VisionQC.app
+chmod +x packaging/make_dmg.sh
+packaging/make_dmg.sh dist/VisionQC.app VisionQC-macos-arm64.dmg
 ```
 
-Output: `dist/VisionQC/` (run `dist/VisionQC/VisionQC`). The build is
-git-ignored.
+Outputs: `dist/VisionQC.app` (real macOS application bundle, icon and
+metadata included), `dist/VisionQC/` (the same app as a plain onedir folder)
+and the DMG with a drag-to-Applications layout.
 
 ## CI
 
@@ -75,19 +85,23 @@ git-ignored.
 
 ## Installing the artifact
 
-**macOS**
+**macOS (DMG)**
 
-1. Unzip `VisionQC-macos-arm64.zip`.
-2. First launch is blocked by Gatekeeper (unsigned): right-click the app →
-   **Open**, or run
-   `xattr -dr com.apple.quarantine /path/to/VisionQC.app`.
-3. The first-run dialog asks for the Supabase URL and anon key.
+1. Download `VisionQC-macos-arm64.dmg` from the GitHub Release or the Actions
+   run artifacts.
+2. Open the DMG and drag **VisionQC** onto the **Applications** shortcut.
+3. First launch is blocked by Gatekeeper (unsigned build): right-click the app
+   → **Open**, or run
+   `xattr -dr com.apple.quarantine /Applications/VisionQC.app`.
+4. The app asks for the server URL and anon key only on the very first run.
+   After one successful sign-in it opens straight into the last organization
+   on every later launch — online or offline.
 
 **Windows**
 
 1. Unzip `VisionQC-windows-x64.zip`.
 2. SmartScreen warns about an unsigned app: **More info → Run anyway**.
-3. Same first-run dialog.
+3. Same first-run dialog and seamless relaunch behaviour.
 
 ## Size budget
 

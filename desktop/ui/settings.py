@@ -15,8 +15,9 @@ from PySide6.QtWidgets import (
 )
 
 from db import database as db
+from desktop import theme
 from desktop.auth import AuthService, OrgContext
-from desktop.ui.widgets import card, muted
+from desktop.ui.widgets import card, muted, page_header
 
 
 def impact_preview(model_version: str, threshold: float, delta: float,
@@ -53,15 +54,16 @@ class SettingsPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
+                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setSpacing(theme.SPACE_M)
 
-        title = QLabel("Settings")
-        title.setObjectName("Title")
-        root.addWidget(title)
+        root.addWidget(page_header(
+            "Settings", "Decision policy, local data and cloud connection"
+        ))
 
         columns = QHBoxLayout()
-        columns.setSpacing(14)
+        columns.setSpacing(theme.SPACE_M)
 
         threshold_card, threshold_layout = card("Decision threshold")
         form = QFormLayout()

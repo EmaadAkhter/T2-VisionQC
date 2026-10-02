@@ -30,8 +30,8 @@ from PySide6.QtWidgets import (
 
 from desktop.auth import AuthError, AuthService, OrgContext
 from desktop.model_store import ModelStore, log_inspection, run_inspection
-from desktop.theme import VERDICT_COLORS
-from desktop.ui.widgets import bgr_to_pixmap, card, muted
+from desktop import theme
+from desktop.ui.widgets import bgr_to_pixmap, card, make_table, muted, page_header
 
 
 class LineCameraWorker(QThread):
@@ -236,35 +236,27 @@ class CamerasPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
+                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setSpacing(theme.SPACE_M)
 
         header = QHBoxLayout()
-        title = QLabel("Cameras")
-        title.setObjectName("Title")
-        header.addWidget(title)
-        header.addStretch(1)
+        header.addWidget(page_header(
+            "Cameras",
+            "Registered in the cloud so the team shares one line layout; "
+            "preview and inference run locally.",
+        ), 1)
         add_button = QPushButton("Add camera")
         add_button.setObjectName("Primary")
         add_button.clicked.connect(self._add_camera)
         header.addWidget(add_button)
         root.addLayout(header)
-        root.addWidget(muted(
-            "Cameras are registered in the cloud so the whole team shares the "
-            "same line layout. Live preview runs locally."
-        ))
 
         columns = QHBoxLayout()
         columns.setSpacing(14)
 
         table_card, table_layout = card("Registered cameras")
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Address", "Line", "Product"]
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table = make_table(["Name", "Type", "Address", "Line", "Product"])
         self.table.itemSelectionChanged.connect(self._selection_changed)
         table_layout.addWidget(self.table)
 
@@ -290,7 +282,8 @@ class CamerasPage(QWidget):
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(420, 320)
         self.preview_label.setStyleSheet(
-            "background:#0f172a; color:#94a3b8; border-radius:8px;"
+            f"background: {theme.SIDEBAR_BG}; color: {theme.SIDEBAR_TEXT}; "
+            f"border-radius: {theme.RADIUS_CONTROL}px;"
         )
         preview_layout.addWidget(self.preview_label, 1)
         self.preview_status = muted("")
@@ -351,7 +344,8 @@ class CamerasPage(QWidget):
             thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
             thumb.setMinimumSize(240, 150)
             thumb.setStyleSheet(
-                "background:#0f172a; color:#94a3b8; border-radius:8px;"
+                f"background: {theme.SIDEBAR_BG}; color: {theme.SIDEBAR_TEXT}; "
+                f"border-radius: {theme.RADIUS_CONTROL}px;"
             )
             name = QLabel(camera["name"])
             name.setStyleSheet("font-weight:600;")
@@ -411,7 +405,7 @@ class CamerasPage(QWidget):
         if tile is None:
             return
         tile["thumb"].setPixmap(bgr_to_pixmap(frame, 260, 160))
-        color = VERDICT_COLORS.get(result["verdict"], "#0f172a")
+        color = theme.VERDICT_COLORS.get(result["verdict"], "#0f172a")
         suffix = uid[-4:] if uid else "no product"
         tile["verdict"].setText(f"{result['verdict']} · {suffix}")
         tile["verdict"].setStyleSheet(f"color: {color}; font-weight: 700;")

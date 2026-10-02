@@ -46,10 +46,11 @@ def run_smoke() -> int:
     from PySide6.QtWidgets import QApplication
 
     from desktop.auth import OrgContext
-    from desktop.theme import STYLESHEET
+    from desktop.theme import STYLESHEET, apply_app_font
     from desktop.ui.window import MainWindow
 
     app = QApplication.instance() or QApplication([])
+    apply_app_font(app)
     app.setStyleSheet(STYLESHEET)
 
     class StubAuth:

@@ -5,25 +5,40 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QProgressBar,
     QPushButton,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from db import database as db
+from desktop import theme
 from desktop.auth import AuthService, OrgContext
 from desktop.model_store import ModelStore, log_inspection, run_inspection
-from desktop.theme import REVIEW, VERDICT_COLORS
-from desktop.ui.widgets import bgr_to_pixmap, card, muted
+from desktop.ui.widgets import (
+    ScoreBar,
+    VerdictBanner,
+    bgr_to_pixmap,
+    card,
+    caption,
+    make_table,
+    muted,
+    page_header,
+)
 from desktop.worker import FunctionWorker
+
+ACTION_TEXT = {
+    "PASS": "Release unit.",
+    "REVIEW": "Inspect the highlighted area manually, then record a decision.",
+    "FAIL": "Set aside and inspect the highlighted area.",
+}
 
 
 class InspectPage(QWidget):
@@ -38,6 +53,7 @@ class InspectPage(QWidget):
         self.capture: cv2.VideoCapture | None = None
         self.pending_image: np.ndarray | None = None
         self.last_uid: str | None = None
+        self.current_frame: np.ndarray | None = None
 
         self.preview_timer = QTimer(self)
         self.preview_timer.setInterval(40)
@@ -51,20 +67,20 @@ class InspectPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
+                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setSpacing(theme.SPACE_M)
 
         header = QHBoxLayout()
-        title = QLabel("Inspect")
-        title.setObjectName("Title")
-        header.addWidget(title)
-        header.addStretch(1)
-        self.model_status = muted("")
-        header.addWidget(self.model_status)
+        header.addWidget(page_header(
+            "Inspect", "Capture a unit and inspect it on this machine"
+        ), 1)
+        self.model_status = caption("")
+        header.addWidget(self.model_status, 0, Qt.AlignmentFlag.AlignBottom)
         root.addLayout(header)
 
         columns = QHBoxLayout()
-        columns.setSpacing(14)
+        columns.setSpacing(theme.SPACE_M)
         columns.addWidget(self._build_capture_card(), 3)
         columns.addWidget(self._build_result_card(), 2)
         root.addLayout(columns, 1)
@@ -74,15 +90,19 @@ class InspectPage(QWidget):
     def _build_capture_card(self) -> QWidget:
         frame, layout = card("Capture unit")
 
-        self.preview_label = QLabel("Camera preview\n\nStart the camera or upload an image")
+        self.preview_label = QLabel(
+            "Start the camera or upload an image to begin"
+        )
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(480, 360)
+        self.preview_label.setMinimumSize(480, 340)
         self.preview_label.setStyleSheet(
-            "background:#0f172a; color:#94a3b8; border-radius:8px;"
+            f"background: {theme.SIDEBAR_BG}; color: {theme.SIDEBAR_TEXT}; "
+            f"border-radius: {theme.RADIUS_CONTROL}px;"
         )
         layout.addWidget(self.preview_label, 1)
 
         controls = QHBoxLayout()
+        controls.setSpacing(theme.SPACE_S)
         self.camera_combo = QComboBox()
         self.camera_combo.addItem("Camera 0 (built-in)", 0)
         self.camera_combo.addItem("Camera 1", 1)
@@ -112,53 +132,46 @@ class InspectPage(QWidget):
     def _build_result_card(self) -> QWidget:
         frame, layout = card("Result")
 
-        self.verdict_label = QLabel("—")
-        self.verdict_label.setObjectName("Metric")
-        self.verdict_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.verdict_label)
+        self.banner = VerdictBanner()
+        layout.addWidget(self.banner)
 
-        self.score_bar = QProgressBar()
-        self.score_bar.setRange(0, 100)
-        self.score_bar.setFormat("score —")
+        self.score_bar = ScoreBar()
         layout.addWidget(self.score_bar)
 
-        self.score_detail = muted("")
-        layout.addWidget(self.score_detail)
-
-        self.certainty_label = muted("")
-        layout.addWidget(self.certainty_label)
-
         self.explanation_label = muted("")
-        self.explanation_label.setWordWrap(True)
         layout.addWidget(self.explanation_label)
 
-        self.setup_label = muted("")
-        layout.addWidget(self.setup_label)
+        self.detail_label = caption("")
+        layout.addWidget(self.detail_label)
 
         self.overlay_label = QLabel("")
         self.overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.overlay_label.setMinimumHeight(180)
+        self.overlay_label.setMinimumHeight(170)
         layout.addWidget(self.overlay_label, 1)
 
-        self.review_row = QHBoxLayout()
+        review_row = QHBoxLayout()
+        review_row.setSpacing(theme.SPACE_S)
         self.accept_button = QPushButton("Accept as PASS")
         self.accept_button.setObjectName("Pass")
         self.accept_button.clicked.connect(lambda: self._review("PASS"))
         self.reject_button = QPushButton("Reject as FAIL")
         self.reject_button.setObjectName("Reject")
         self.reject_button.clicked.connect(lambda: self._review("FAIL"))
-        self.review_row.addWidget(self.accept_button)
-        self.review_row.addWidget(self.reject_button)
-        self.review_row_widget = QWidget()
-        self.review_row_widget.setLayout(self.review_row)
-        self.review_row_widget.setVisible(False)
-        layout.addWidget(self.review_row_widget)
+        review_row.addWidget(self.accept_button)
+        review_row.addWidget(self.reject_button)
+        self.review_widget = QWidget()
+        self.review_widget.setLayout(review_row)
+        self.review_widget.setVisible(False)
+        layout.addWidget(self.review_widget)
         return frame
 
     def _build_recent_card(self) -> QWidget:
         frame, layout = card("Recent inspections")
-        self.recent_grid = QGridLayout()
-        layout.addLayout(self.recent_grid)
+        self.recent_table = make_table(
+            ["Time", "Inspection", "Score", "Verdict", "Disposition"]
+        )
+        self.recent_table.setMaximumHeight(220)
+        layout.addWidget(self.recent_table)
         return frame
 
     # ----------------------------------------------------------------- camera
@@ -172,7 +185,8 @@ class InspectPage(QWidget):
         if not capture.isOpened():
             QMessageBox.warning(
                 self, "Camera unavailable",
-                f"Could not open camera {index}. Check permissions or use upload.",
+                f"Could not open camera {index}. Check permissions or use "
+                "the upload fallback.",
             )
             return
         self.capture = capture
@@ -198,11 +212,10 @@ class InspectPage(QWidget):
         self.preview_label.setPixmap(bgr_to_pixmap(frame, 640, 420))
 
     def _capture_frame(self) -> None:
-        frame = getattr(self, "current_frame", None)
-        if frame is None:
+        if self.current_frame is None:
             return
-        self.pending_image = frame.copy()
-        self.preview_label.setPixmap(bgr_to_pixmap(frame, 640, 420))
+        self.pending_image = self.current_frame.copy()
+        self.preview_label.setPixmap(bgr_to_pixmap(self.pending_image, 640, 420))
         self.inspect_button.setEnabled(True)
 
     def _upload_image(self) -> None:
@@ -224,8 +237,14 @@ class InspectPage(QWidget):
 
     def _refresh_model_status(self) -> None:
         version = self.model_store.active_version()
+        profile = self.model_store.active_profile()
+        parts = []
+        if version:
+            parts.append(f"Model {version[:14]}…")
+        if profile:
+            parts.append(f"Profile “{profile['name']}”")
         self.model_status.setText(
-            f"Active model: {version}" if version
+            " · ".join(parts) if parts
             else "No model trained yet — open Train first."
         )
 
@@ -258,43 +277,33 @@ class InspectPage(QWidget):
         self.inspect_button.setText("Inspect")
 
         if result.get("no_product"):
-            self.verdict_label.setText("NO PRODUCT")
-            self.verdict_label.setStyleSheet(
-                "color: #64748b; font-size: 26px; font-weight: 700;"
+            self.banner.set_result(
+                "NONE", "No product detected in the expected region. "
+                        "Adjust the unit or camera and capture again — "
+                        "nothing was logged."
             )
-            self.explanation_label.setText(
-                "No product detected in the expected region. Adjust the unit "
-                "or the camera and capture again — nothing was logged."
-            )
-            self.review_row_widget.setVisible(False)
+            self.score_bar.set_score(None)
+            self.explanation_label.setText("")
+            self.detail_label.setText("")
+            self.review_widget.setVisible(False)
             self.status_bar.showMessage("No product — not logged", 4000)
             return
 
         verdict = result["verdict"]
-        color = VERDICT_COLORS[verdict]
-        self.verdict_label.setText(verdict)
-        self.verdict_label.setStyleSheet(f"color: {color}; font-size: 26px; font-weight: 700;")
-
-        self.score_bar.setValue(int(round(result["score"] * 100)))
-        self.score_bar.setFormat(f"score {result['score']:.2f}")
-        self.score_detail.setText(
-            f"Threshold {result['threshold']:.2f} · review band ±{result['delta']:.2f} · "
-            f"{result['latency_ms']} ms"
-        )
-        self.certainty_label.setText(
-            f"Decision certainty: {result['certainty']} — {result['certainty_reason']}"
-        )
-        self.explanation_label.setText(f"“{result['explanation']}”")
-        self.setup_label.setText(
-            f"Setup: {result['setup_status']} · "
-            + "; ".join(result["setup_reasons"])
-        )
-        self.overlay_label.setPixmap(
-            bgr_to_pixmap(result["overlay"], 420, 240)
-        )
-        self.review_row_widget.setVisible(verdict == "REVIEW")
-        if verdict == "REVIEW":
-            self.review_row_widget.setStyleSheet(f"color: {REVIEW};")
+        certainty = f"Decision certainty: {result['certainty']} — {result['certainty_reason']}"
+        self.banner.set_result(verdict, ACTION_TEXT.get(verdict, ""), certainty)
+        self.score_bar.set_score(result["score"], result["threshold"],
+                                 result["delta"])
+        self.explanation_label.setText(result["explanation"])
+        details = []
+        if result.get("region_label"):
+            details.append(f"Location {result['region_label']}")
+        details.append(f"Area {result['area_pct']:.1f}%")
+        details.append(f"Setup {result['setup_status']}")
+        details.append(f"{result['latency_ms']} ms")
+        self.detail_label.setText(" · ".join(details))
+        self.overlay_label.setPixmap(rgb_to_pixmap_safe(result["overlay"]))
+        self.review_widget.setVisible(verdict == "REVIEW")
 
         uid = log_inspection(result, self.pending_image, model.model_version)
         self.last_uid = uid
@@ -312,27 +321,18 @@ class InspectPage(QWidget):
             return
         db.update_disposition(target["id"], disposition, override=True,
                               note=f"Reviewed from desktop as {disposition}")
-        self.review_row_widget.setVisible(False)
-        self.status_bar.showMessage(f"{self.last_uid} recorded as {disposition}", 4000)
+        self.review_widget.setVisible(False)
+        self.status_bar.showMessage(
+            f"{self.last_uid} recorded as {disposition}", 4000
+        )
         self._refresh_recent()
 
     # ----------------------------------------------------------------- recent
 
     def _refresh_recent(self) -> None:
-        while self.recent_grid.count():
-            item = self.recent_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        headers = ["Time", "UID", "Score", "Verdict", "Disposition"]
-        for col, text in enumerate(headers):
-            label = QLabel(text)
-            label.setStyleSheet("font-weight:600; color:#64748b;")
-            self.recent_grid.addWidget(label, 0, col)
-
         rows = db.get_inspections(limit=6)
-        for row_idx, row in enumerate(rows, start=1):
+        self.recent_table.setRowCount(len(rows))
+        for row_idx, row in enumerate(rows):
             values = [
                 str(row.get("timestamp", ""))[11:19],
                 row.get("uid", ""),
@@ -341,9 +341,14 @@ class InspectPage(QWidget):
                 row.get("disposition", ""),
             ]
             for col, text in enumerate(values):
-                label = QLabel(text)
-                if col == 3:
-                    label.setStyleSheet(
-                        f"color: {VERDICT_COLORS.get(text, '#0f172a')}; font-weight:600;"
-                    )
-                self.recent_grid.addWidget(label, row_idx, col)
+                item = QTableWidgetItem(text)
+                if col == 3 and text in theme.VERDICT_COLORS:
+                    item.setForeground(QColor(theme.VERDICT_COLORS[text]))
+                self.recent_table.setItem(row_idx, col, item)
+        self.recent_table.resizeColumnsToContents()
+
+
+def rgb_to_pixmap_safe(image: np.ndarray):
+    from desktop.ui.widgets import rgb_to_pixmap
+
+    return rgb_to_pixmap(image, 420, 230)

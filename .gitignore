@@ -63,4 +63,5 @@ data/desktop_session.json
 dist/
 build/
 packaging/weights/
+packaging/VisionQC.iconset/
 *.spec.bak

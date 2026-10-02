@@ -70,6 +70,24 @@ code {
   gap: 12px;
 }
 
+.auth-links {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+details[open] summary {
+  margin-bottom: 4px;
+}
+
 label {
   display: flex;
   flex-direction: column;

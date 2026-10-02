@@ -10,6 +10,7 @@ export default function App() {
   const [orgs, setOrgs] = useState([])
   const [activeOrg, setActiveOrg] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [recovery, setRecovery] = useState(false)
 
   useEffect(() => {
     if (!isConfigured) {
@@ -20,7 +21,8 @@ export default function App() {
       setSession(data.session)
       setLoading(false)
     })
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true)
       setSession(next)
     })
     return () => sub.subscription.unsubscribe()
@@ -63,9 +65,10 @@ export default function App() {
   }
 
   if (loading) return <div className="center muted">Loading…</div>
+  if (recovery) return <SetPassword onDone={() => setRecovery(false)} />
   if (!session) return <SignIn />
   if (orgs.length === 0) {
-    return <CreateOrg session={session} onCreated={() => setRefreshKey((k) => k + 1)} />
+    return <NoAccess session={session} onCreated={() => setRefreshKey((k) => k + 1)} />
   }
 
   return (
@@ -80,18 +83,29 @@ export default function App() {
 }
 
 function SignIn() {
-  const [mode, setMode] = useState('signin')
+  const [mode, setMode] = useState('signin') // signin | signup | forgot
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function submit(event) {
     event.preventDefault()
     setBusy(true)
     setError('')
+    setNotice('')
     try {
+      if (mode === 'forgot') {
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+          email,
+          { redirectTo: window.location.origin },
+        )
+        if (resetError) throw resetError
+        setNotice('If that email exists, a reset link is on its way.')
+        return
+      }
       if (mode === 'signup') {
         const { error: signUpError } = await supabase.auth.signUp({
           email,
@@ -112,11 +126,17 @@ function SignIn() {
     }
   }
 
+  const titles = {
+    signin: ['VisionQC Admin', 'Organization access console'],
+    signup: ['Create your account', 'The first user creates the organization'],
+    forgot: ['Reset your password', 'We will email you a reset link'],
+  }
+
   return (
     <div className="center">
       <form className="card auth" onSubmit={submit}>
-        <h1>VisionQC Admin</h1>
-        <p className="muted">Organization access console</p>
+        <h1>{titles[mode][0]}</h1>
+        <p className="muted">{titles[mode][1]}</p>
         {mode === 'signup' && (
           <label>
             Full name
@@ -132,37 +152,110 @@ function SignIn() {
             required
           />
         </label>
+        {mode !== 'forgot' && (
+          <label>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+        )}
+        {error && <p className="error">{error}</p>}
+        {notice && <p className="muted">{notice}</p>}
+        <button className="primary" disabled={busy}>
+          {mode === 'signin' && 'Sign in'}
+          {mode === 'signup' && 'Create account'}
+          {mode === 'forgot' && 'Send reset link'}
+        </button>
+        <div className="auth-links">
+          {mode === 'signin' && (
+            <>
+              <button type="button" className="link" onClick={() => setMode('signup')}>
+                First time? Create an account
+              </button>
+              <button type="button" className="link" onClick={() => setMode('forgot')}>
+                Forgot password?
+              </button>
+            </>
+          )}
+          {mode !== 'signin' && (
+            <button type="button" className="link" onClick={() => setMode('signin')}>
+              Back to sign in
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function SetPassword({ onDone }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function save(event) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    const { error: updateError } = await supabase.auth.updateUser({ password })
+    setBusy(false)
+    if (updateError) {
+      setError(updateError.message)
+      return
+    }
+    onDone()
+  }
+
+  return (
+    <div className="center">
+      <form className="card auth" onSubmit={save}>
+        <h1>Set a new password</h1>
+        <p className="muted">Choose a new password for your account.</p>
         <label>
-          Password
+          New password
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            minLength={6}
             required
           />
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy}>
-          {mode === 'signin' ? 'Sign in' : 'Create account'}
-        </button>
-        <button
-          type="button"
-          className="link"
-          onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
-        >
-          {mode === 'signin'
-            ? 'First time? Create an account'
-            : 'I already have an account'}
+        <button className="primary" disabled={busy || password.length < 6}>
+          Save password
         </button>
       </form>
     </div>
   )
 }
 
-function CreateOrg({ session, onCreated }) {
+function NoAccess({ session, onCreated }) {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('Waiting for an invitation — checking automatically.')
+
+  async function check(silent = false) {
+    if (!silent) setStatus('Checking for invitations…')
+    await supabase.rpc('claim_invitations')
+    const { data } = await supabase.from('my_orgs').select('*')
+    if (data?.length) {
+      onCreated()
+      return
+    }
+    if (!silent) setStatus('Still no access. Ask your admin to invite you.')
+  }
+
+  useEffect(() => {
+    const timer = setInterval(() => check(true), 10000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function create(event) {
     event.preventDefault()
@@ -179,24 +272,37 @@ function CreateOrg({ session, onCreated }) {
 
   return (
     <div className="center">
-      <form className="card auth" onSubmit={create}>
-        <h1>Create your organization</h1>
+      <div className="card auth">
+        <h1>No access yet</h1>
         <p className="muted">
-          Signed in as {session.user.email}. You are not a member of any
-          organization yet.
+          Signed in as {session.user.email}. This account is not a member of any
+          organization.
         </p>
-        <label>
-          Organization name
-          <input value={name} onChange={(e) => setName(e.target.value)} required />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy || name.trim().length < 2}>
-          Create organization
+        <p className="muted">{status}</p>
+        <button className="primary" onClick={() => check(false)}>
+          Check again
         </button>
+        <details>
+          <summary>Create a new organization instead</summary>
+          <form className="auth" onSubmit={create} style={{ marginTop: 12 }}>
+            <label>
+              Organization name
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </label>
+            {error && <p className="error">{error}</p>}
+            <button className="primary" disabled={busy || name.trim().length < 2}>
+              Create organization
+            </button>
+          </form>
+        </details>
         <button type="button" className="link" onClick={() => supabase.auth.signOut()}>
           Sign out
         </button>
-      </form>
+      </div>
     </div>
   )
 }

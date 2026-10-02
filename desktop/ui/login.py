@@ -7,7 +7,7 @@ memberships the account has.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -44,7 +44,7 @@ class LoginWindow(QDialog):
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.email_input = QLineEdit()
+        self.email_input = QLineEdit(auth.user_email or "")
         self.email_input.setPlaceholderText("you@factory.com")
         form.addRow("Email", self.email_input)
 
@@ -67,7 +67,7 @@ class LoginWindow(QDialog):
 
         hint = QLabel(
             "No account? Ask your admin to invite you from the VisionQC web "
-            "console. Local demo: owner@visionqc.local / visionqc123"
+            "console. Forgot your password? Reset it from the web console too."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
@@ -129,7 +129,7 @@ class NoAccessDialog(QDialog):
         buttons = QHBoxLayout()
         check = QPushButton("Check again")
         check.setObjectName("Primary")
-        check.clicked.connect(self._check)
+        check.clicked.connect(lambda: self._check())
         buttons.addWidget(check)
 
         sign_out = QPushButton("Sign out")
@@ -137,17 +137,28 @@ class NoAccessDialog(QDialog):
         buttons.addWidget(sign_out)
         layout.addLayout(buttons)
 
-    def _check(self) -> None:
-        self.status.setText("Checking for invitations…")
+        # Seamless access: poll for the admin's invitation automatically.
+        self._timer = QTimer(self)
+        self._timer.setInterval(10_000)
+        self._timer.timeout.connect(lambda: self._check(silent=True))
+        self._timer.start()
+        self.status.setText("Waiting for an invitation… checking automatically.")
+
+    def _check(self, silent: bool = False) -> None:
+        if not silent:
+            self.status.setText("Checking for invitations…")
         try:
             self.auth.claim_invitations()
             self.orgs = self.auth.refresh_orgs()
         except AuthError as exc:
-            self.status.setText(str(exc))
+            if not silent:
+                self.status.setText(str(exc))
             return
         if self.orgs:
+            self._timer.stop()
             self.accept()
-        else:
+        elif not silent:
             self.status.setText(
-                "Still no access. Ask your admin to send the invitation."
+                "Still no access. Ask your admin to send the invitation — "
+                "this screen will continue checking automatically."
             )

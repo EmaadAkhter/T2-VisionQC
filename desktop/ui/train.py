@@ -22,7 +22,8 @@ import paths
 from db import database as db
 from desktop.auth import AuthService, OrgContext
 from desktop.theme import MUTED
-from desktop.ui.widgets import card, muted
+from desktop import theme
+from desktop.ui.widgets import card, make_table, muted, page_header
 from desktop.worker import FunctionWorker
 from service.inference import MIN_TRAIN_IMAGES, PatchCoreModel, TARGET_TRAIN_IMAGES
 
@@ -68,19 +69,19 @@ class TrainPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
+                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setSpacing(theme.SPACE_M)
 
-        title = QLabel("Train")
-        title.setObjectName("Title")
-        root.addWidget(title)
-        root.addWidget(muted(
+        root.addWidget(page_header(
+            "Train",
             f"Upload {TARGET_TRAIN_IMAGES}–30 photos of GOOD units only. "
-            "No defect images are needed — the model learns what normal looks like."
+            "No defect images are needed — the model learns what normal "
+            "looks like.",
         ))
 
         columns = QHBoxLayout()
-        columns.setSpacing(14)
+        columns.setSpacing(theme.SPACE_M)
         columns.addWidget(self._build_upload_card(), 3)
         columns.addWidget(self._build_models_card(), 2)
         root.addLayout(columns, 1)
@@ -121,13 +122,9 @@ class TrainPage(QWidget):
 
     def _build_models_card(self) -> QWidget:
         frame, layout = card("Model versions")
-        self.models_table = QTableWidget(0, 4)
-        self.models_table.setHorizontalHeaderLabels(
+        self.models_table = make_table(
             ["Version", "Images", "Created", "Active"]
         )
-        self.models_table.horizontalHeader().setStretchLastSection(True)
-        self.models_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.models_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.models_table)
 
         activate = QPushButton("Activate selected version")

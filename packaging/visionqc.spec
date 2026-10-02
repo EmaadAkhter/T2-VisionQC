@@ -3,6 +3,7 @@
 # Output: dist/VisionQC/ (onedir, run the VisionQC executable inside)
 
 from pathlib import Path
+import sys
 
 from PyInstaller.utils.hooks import (
     collect_all,
@@ -122,3 +123,22 @@ coll = COLLECT(
     upx=False,
     name="VisionQC",
 )
+
+# Real macOS application bundle (icon, metadata, proper activation).
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="VisionQC.app",
+        icon=str(ROOT / "packaging" / "icon.icns"),
+        bundle_identifier="com.visionqc.desktop",
+        version="0.3.0",
+        info_plist={
+            "CFBundleDisplayName": "VisionQC",
+            "CFBundleName": "VisionQC",
+            "CFBundleShortVersionString": "0.3.0",
+            "CFBundleVersion": "0.3.0",
+            "LSMinimumSystemVersion": "12.0",
+            "LSApplicationCategoryType": "public.app-category.productivity",
+            "NSHighResolutionCapable": True,
+        },
+    )

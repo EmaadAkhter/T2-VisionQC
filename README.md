@@ -111,9 +111,11 @@ console) → **Train** on 20–30 good images → **Inspect** with webcam/upload
 numbers. Inspections sync to the cloud automatically (retry/backoff; evidence
 upload policy in Settings).
 
-Desktop packaging: builds for macOS and Windows are produced by
-`.github/workflows/desktop-build.yml`; see **[docs/PACKAGING.md](docs/PACKAGING.md)**
-for local builds, artifact installation and signing status.
+Desktop packaging: macOS builds ship as a **DMG** (drag to Applications);
+Windows as a zip. Both are produced by
+`.github/workflows/desktop-build.yml`, attached to GitHub Releases on `v*`
+tags, and verified in CI with `--smoke` and `--selftest`. See
+**[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 Mobile workflow: sign in → choose organization → enter the edge address and
 pairing code shown on the desktop Cameras page → continuous streaming with
