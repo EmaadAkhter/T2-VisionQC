@@ -25,12 +25,14 @@ from desktop import theme
 
 NAV_ITEMS = [
     ("inspect", "Inspect"),
-    ("train", "Train"),
-    ("profiles", "Profiles"),
     ("cameras", "Cameras"),
-    ("multi_camera", "Multi-camera"),
+    ("train", "Train"),
     ("kpi", "KPI"),
     ("settings", "Settings"),
+]
+
+ADVANCED_ITEMS = [
+    ("profiles", "Profiles"),
 ]
 
 ROLE_LABELS = {
@@ -150,6 +152,17 @@ class MainWindow(QMainWindow):
             self.nav_group.addButton(button)
             layout.addWidget(button)
 
+        advanced_label = QLabel("Advanced")
+        advanced_label.setObjectName("Section")
+        layout.addWidget(advanced_label)
+        for key, label in ADVANCED_ITEMS:
+            button = QPushButton(label)
+            button.setObjectName("Nav")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _, k=key: self._switch(k))
+            self.nav_group.addButton(button)
+            layout.addWidget(button)
+
         layout.addStretch(1)
 
         self.user_label = QLabel(self.auth.user_email or "")
@@ -225,10 +238,6 @@ class MainWindow(QMainWindow):
             from desktop.ui.cameras import CamerasPage
             return CamerasPage(self.auth, self.org, self.statusBar(), self.edge,
                                smoke=self.smoke, sync_engine=self.sync_engine)
-        if key == "multi_camera":
-            from desktop.ui.multi_camera import MultiCameraPage
-            return MultiCameraPage(self.auth, self.org, self.statusBar(),
-                                   sync_engine=self.sync_engine)
         if key == "kpi":
             from desktop.ui.kpi import KpiPage
             return KpiPage(self.auth, self.org, sync_engine=self.sync_engine)

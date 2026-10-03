@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from desktop import theme
 from desktop.ui.widgets import muted
 
-POPULAR_RELAY_URL = "https://visionqc.tavesglobal.com"
+POPULAR_RELAY_URL = "https://relay.tavesglobal.com"
 
 
 def load_relay_settings() -> tuple[str, str]:

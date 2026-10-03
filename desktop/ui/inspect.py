@@ -9,11 +9,12 @@ logged automatically, so defective units are captured without any clicking.
 from __future__ import annotations
 
 import time
+from collections import deque
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSettings, QTimer, Qt
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTableWidgetItem,
@@ -78,6 +80,44 @@ def _fetch_relay_cameras(url: str, token: str) -> list[dict]:
     return [camera for camera in cameras if camera["online"]]
 
 
+def _probe_usb_cameras(max_index: int = 4) -> list[str]:
+    """USB indices that open and deliver a frame (called on a worker)."""
+    found = []
+    for index in range(max_index):
+        try:
+            capture = cv2.VideoCapture(index)
+        except Exception:  # noqa: BLE001 - missing device backend
+            continue
+        opened = capture.isOpened()
+        if opened:
+            ok, _frame = capture.read()
+            opened = ok
+        capture.release()
+        if opened:
+            found.append(str(index))
+    return found
+
+
+# ----------------------------------------------------------- session restore
+
+_SETTINGS_ORG, _SETTINGS_APP = "VisionQC", "Desktop"
+
+
+def _saved_camera_source() -> tuple | None:
+    """The camera source picked in the previous session, if any."""
+    settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    raw = str(settings.value("session/camera_source", "") or "")
+    if ":" not in raw:
+        return None
+    kind, _, ident = raw.partition(":")
+    return ("usb", ident) if kind == "usb" else ("relay", ident)
+
+
+def _store_camera_source(kind: str, ident: str) -> None:
+    settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    settings.setValue("session/camera_source", f"{kind}:{ident}")
+
+
 class InspectPage(QWidget):
     def __init__(self, auth: AuthService, org: OrgContext, status_bar,
                  sync_engine=None):
@@ -100,6 +140,10 @@ class InspectPage(QWidget):
         self.relay_client: ServerClient | None = None
         self._relay_camera_id: str | None = None
         self._relay_worker: FunctionWorker | None = None
+        self._usb_worker: FunctionWorker | None = None
+        self._usb_indices: list = []
+        self._relay_cameras: list = []
+        self._result_times: deque = deque(maxlen=30)
 
         # Cached product-outline overlay for the live preview.
         self._outline_key: tuple | None = None
@@ -147,6 +191,8 @@ class InspectPage(QWidget):
         self.model_combo.blockSignals(False)
 
     def _on_camera_index_changed(self) -> None:
+        kind, ident = self._selected_source()
+        _store_camera_source(kind, ident)
         assignment = db.get_camera_model(self._camera_key())
         version = assignment.get("model_version") if assignment else None
         self._refresh_model_combo(select_version=version)
@@ -200,34 +246,43 @@ class InspectPage(QWidget):
         )
         layout.addWidget(self.preview_label, 1)
 
-        controls = QHBoxLayout()
-        controls.setSpacing(theme.SPACE_S)
+        # Primary row: the one action that matters + a live speed chip.
+        primary = QHBoxLayout()
+        primary.setSpacing(theme.SPACE_S)
+        self.camera_button = QPushButton("Start live inspection")
+        self.camera_button.setObjectName("Primary")
+        self.camera_button.clicked.connect(self._toggle_camera)
+        primary.addWidget(self.camera_button, 1)
+        self.fps_chip = caption("")
+        self.fps_chip.setAlignment(Qt.AlignmentFlag.AlignRight |
+                                   Qt.AlignmentFlag.AlignVCenter)
+        primary.addWidget(self.fps_chip)
+        layout.addLayout(primary)
+
+        # Secondary row: the picks. Rare actions live in the ⋯ menu.
+        secondary = QHBoxLayout()
+        secondary.setSpacing(theme.SPACE_S)
         self.model_combo = QComboBox()
         self.model_combo.setToolTip(
             "Model used for live inference on this camera; saved per camera."
         )
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        controls.addWidget(self.model_combo)
+        secondary.addWidget(self.model_combo, 2)
 
         self.camera_combo = QComboBox()
         self.camera_combo.setToolTip(
             "Local USB cameras and online phone cameras on the relay."
         )
-        self.camera_combo.addItem("Camera 0 (built-in)", ("usb", "0"))
-        self.camera_combo.addItem("Camera 1", ("usb", "1"))
         self.camera_combo.currentIndexChanged.connect(self._on_camera_index_changed)
-        controls.addWidget(self.camera_combo)
+        secondary.addWidget(self.camera_combo, 2)
 
-        self.relay_refresh = QPushButton("Relay cameras")
+        self.relay_refresh = QPushButton("↻")
         self.relay_refresh.setToolTip(
-            "Find phone cameras that are online on the relay server"
+            "Refresh the camera list (probe USB, find online phones)"
         )
-        self.relay_refresh.clicked.connect(self._refresh_relay_cameras)
-        controls.addWidget(self.relay_refresh)
-
-        self.camera_button = QPushButton("Start live inspection")
-        self.camera_button.clicked.connect(self._toggle_camera)
-        controls.addWidget(self.camera_button)
+        self.relay_refresh.setFixedWidth(34)
+        self.relay_refresh.clicked.connect(self._refresh_cameras)
+        secondary.addWidget(self.relay_refresh)
 
         self.auto_check = QCheckBox("Auto-log FAIL & REVIEW")
         self.auto_check.setChecked(True)
@@ -235,17 +290,21 @@ class InspectPage(QWidget):
             "Log a FAIL or REVIEW automatically (with its evidence images) "
             "when it persists for two frames."
         )
-        controls.addWidget(self.auto_check)
+        secondary.addWidget(self.auto_check)
 
-        self.log_button = QPushButton("Log current result")
-        self.log_button.setEnabled(False)
-        self.log_button.clicked.connect(self._log_current)
-        controls.addWidget(self.log_button)
-
-        upload = QPushButton("Inspect image…")
-        upload.clicked.connect(self._upload_image)
-        controls.addWidget(upload)
-        layout.addLayout(controls)
+        self.menu_button = QPushButton("⋯")
+        self.menu_button.setFixedWidth(34)
+        self.menu_button.setToolTip("More actions")
+        menu = QMenu(self.menu_button)
+        self.log_action = QAction("Log current result", menu)
+        self.log_action.setEnabled(False)
+        self.log_action.triggered.connect(self._log_current)
+        menu.addAction(self.log_action)
+        menu.addAction(QAction("Inspect image…", menu,
+                               triggered=self._upload_image))
+        self.menu_button.setMenu(menu)
+        secondary.addWidget(self.menu_button)
+        layout.addLayout(secondary)
 
         self.live_status = caption(
             "Live inference always runs on the newest frame; slower hardware "
@@ -417,25 +476,41 @@ class InspectPage(QWidget):
             self._relay_camera_id = None
         self.camera_button.setEnabled(True)
         self.camera_button.setText("Start live inspection")
-        self.log_button.setEnabled(False)
+        self.log_action.setEnabled(False)
 
-    # -------------------------------------------------------------- relay list
+    # ------------------------------------------------------------ camera list
 
-    def _refresh_relay_cameras(self, *_args) -> None:
-        """Fetch online phone cameras; ask for the token on explicit refresh."""
+    def _refresh_cameras(self, *_args) -> None:
+        """Re-probe USB cameras and fetch online phones in the background."""
         url, token = load_relay_settings()
-        if not token:
-            if self.sender() is not self.relay_refresh:
-                return
+        if token:
+            worker = FunctionWorker(_fetch_relay_cameras, url, token)
+            worker.finished_ok.connect(self._store_relay_cameras)
+            worker.failed.connect(self._relay_list_failed)
+            self._relay_worker = worker
+            worker.start()
+        elif self.sender() is self.relay_refresh:
             resolved = self._ask_relay_settings()
             if resolved is None:
                 return
             url, token = resolved
-        worker = FunctionWorker(_fetch_relay_cameras, url, token)
-        worker.finished_ok.connect(self._render_camera_combo)
-        worker.failed.connect(self._relay_list_failed)
-        self._relay_worker = worker
-        worker.start()
+            worker = FunctionWorker(_fetch_relay_cameras, url, token)
+            worker.finished_ok.connect(self._store_relay_cameras)
+            worker.failed.connect(self._relay_list_failed)
+            self._relay_worker = worker
+            worker.start()
+        probe = FunctionWorker(_probe_usb_cameras)
+        probe.finished_ok.connect(self._store_usb_indices)
+        self._usb_worker = probe
+        probe.start()
+
+    def _store_usb_indices(self, indices: list) -> None:
+        self._usb_indices = list(indices) or ["0"]
+        self._render_camera_combo()
+
+    def _store_relay_cameras(self, cameras: list) -> None:
+        self._relay_cameras = list(cameras)
+        self._render_camera_combo()
 
     def _relay_list_failed(self, trace: str) -> None:
         last = trace.strip().splitlines()[-1] if trace.strip() else ""
@@ -443,26 +518,32 @@ class InspectPage(QWidget):
             f"Could not list relay cameras: {last}", 5000
         )
 
-    def _render_camera_combo(self, cameras: list) -> None:
+    def _render_camera_combo(self) -> None:
         current = self.camera_combo.currentData()
         self.camera_combo.blockSignals(True)
         self.camera_combo.clear()
-        self.camera_combo.addItem("Camera 0 (built-in)", ("usb", "0"))
-        self.camera_combo.addItem("Camera 1", ("usb", "1"))
-        if cameras:
+        for ident in self._usb_indices:
+            label = (f"Camera {ident} (built-in)" if ident == "0"
+                     else f"Camera {ident}")
+            self.camera_combo.addItem(label, ("usb", ident))
+        if self._relay_cameras:
             self.camera_combo.insertSeparator(self.camera_combo.count())
-            for camera in cameras:
+            for camera in self._relay_cameras:
                 label = f"{camera.get('name') or camera['id']} (phone)"
                 self.camera_combo.addItem(label, ("relay", camera["id"]))
-        for index in range(self.camera_combo.count()):
-            if self.camera_combo.itemData(index) == current:
-                self.camera_combo.setCurrentIndex(index)
-                break
+        restored = _saved_camera_source()
+        wanted = current if current is not None else restored
+        if wanted is not None:
+            for index in range(self.camera_combo.count()):
+                if self.camera_combo.itemData(index) == wanted:
+                    self.camera_combo.setCurrentIndex(index)
+                    break
         self.camera_combo.blockSignals(False)
-        self._on_camera_index_changed()
-        if cameras:
+        if self.camera_combo.count():
+            self._on_camera_index_changed()
+        if self._relay_cameras:
             self.status_bar.showMessage(
-                f"{len(cameras)} phone camera(s) online", 3000
+                f"{len(self._relay_cameras)} phone camera(s) online", 3000
             )
 
     def _ask_relay_settings(self) -> tuple[str, str] | None:
@@ -545,7 +626,7 @@ class InspectPage(QWidget):
             # non-capture verdict so the decider re-arms when the next unit
             # arrives.
             self.latest_result = None
-            self.log_button.setEnabled(False)
+            self.log_action.setEnabled(False)
             self.banner.set_result(
                 "NONE", "No product in view — waiting for a unit.", ""
             )
@@ -558,7 +639,7 @@ class InspectPage(QWidget):
         self.latest_result = result
         self.latest_result_at = time.monotonic()
         self._apply_result(result)
-        self.log_button.setEnabled(True)
+        self.log_action.setEnabled(True)
         if self.auto_check.isChecked() and self.decider.update(result["verdict"]):
             self._log_result(result, reason="Auto-captured")
 

@@ -8,10 +8,10 @@ import '../services/relay_client.dart';
 
 /// Stream the phone camera to the VisionQC relay server.
 ///
-/// Frames are sampled (default every 1.2 s) and sent as binary JPEG over the
-/// authenticated camera WebSocket. The relay forwards them to dashboards;
-/// inference runs on the dashboard side, so this screen shows connection
-/// state and frames sent rather than verdicts.
+/// Frames are sampled at ~5.5 fps (adaptive: slower devices back off
+/// automatically) and sent as JPEG over the authenticated camera WebSocket.
+/// The relay forwards them to dashboards; inference runs on the dashboard
+/// side, so this screen shows connection state and frames sent.
 class RelayStreamScreen extends StatefulWidget {
   const RelayStreamScreen({super.key, required this.client});
 
@@ -22,8 +22,11 @@ class RelayStreamScreen extends StatefulWidget {
 }
 
 class _RelayStreamScreenState extends State<RelayStreamScreen> {
-  static const _minInterval = Duration(milliseconds: 1200);
+  /// Steady sampling rate: ~5.5 fps keeps the dashboard live while leaving
+  /// the phone (encode) and the relay link plenty of headroom.
+  static const _targetInterval = Duration(milliseconds: 180);
 
+  Duration _interval = _targetInterval;
   CameraController? _controller;
   StreamSubscription<String>? _statusSub;
   bool _streaming = false;
@@ -98,12 +101,20 @@ class _RelayStreamScreenState extends State<RelayStreamScreen> {
 
   void _onFrame(CameraImage frame) {
     final now = DateTime.now();
-    if (now.difference(_lastSent) < _minInterval) return;
-    _lastSent = now;
+    if (now.difference(_lastSent) < _interval) return;
+    final watch = Stopwatch()..start();
     final jpeg = encodeCameraFrameJpeg(frame);
+    watch.stop();
+    _lastSent = now;
     if (jpeg == null) return;
     widget.client.sendFrame(jpeg);
     setState(() => _framesSent += 1);
+    // Adaptive backoff: if encoding a frame takes longer than the target
+    // interval, space frames out so we never lag behind the phone; recover
+    // to the target rate as soon as a frame is quick again.
+    _interval = watch.elapsed > _targetInterval
+        ? watch.elapsed * 1.3
+        : _targetInterval;
   }
 
   @override

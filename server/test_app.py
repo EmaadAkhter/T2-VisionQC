@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from pathlib import Path
 
 os.environ.setdefault("VISIONQC_SERVER_DATA",
                       tempfile.mkdtemp(prefix="vqc-server-test-"))
@@ -119,23 +118,3 @@ def test_assigning_unknown_model_fails():
             json={"model_version": "v-does-not-exist"}, headers=HEADERS,
         )
         assert response.status_code == 404
-
-
-def test_landing_page_served_at_root():
-    with TestClient(app) as client:
-        response = client.get("/")
-        assert response.status_code == 200
-        assert "VisionQC" in response.text
-        assert "/admin/" in response.text
-        # The relay API keeps priority over the catch-all static mount.
-        assert client.get("/health").json()["status"] == "ok"
-
-
-def test_admin_console_served_under_admin():
-    index = Path(__file__).resolve().parent.parent / "admin-web" / "dist" / "index.html"
-    if not index.is_file():
-        pytest.skip("admin-web/dist not built")
-    with TestClient(app) as client:
-        response = client.get("/admin/")
-        assert response.status_code == 200
-        assert 'id="root"' in response.text

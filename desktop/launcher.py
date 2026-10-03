@@ -70,7 +70,7 @@ def run_smoke() -> int:
         role="owner",
     )
     window = MainWindow(StubAuth(), [org], org, smoke=True)
-    for key in ("inspect", "train", "cameras", "kpi", "settings"):
+    for key in ("inspect", "train", "cameras", "kpi", "settings", "profiles"):
         window._switch(key)  # noqa: SLF001 - self-test
     window.close()
     print("smoke ok")

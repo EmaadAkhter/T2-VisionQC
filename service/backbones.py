@@ -109,7 +109,7 @@ class DINOv2Backbone:
     def __init__(
         self,
         model_name: str = DINOV2_MODELS["dinov2_vits14"],
-        input_size: int = 448,
+        input_size: int = 336,
         layers: Sequence[int] = (-1,),
         normalize: bool = True,
     ):
@@ -222,7 +222,7 @@ def resolve_default_engine(n_images: int | None = None) -> tuple[str, dict]:
     """
     if dinov2_weights_available():
         if n_images is None or n_images <= LARGE_TRAIN_SET:
-            return "dinov2_vits14", {"input_size": 448}
+            return "dinov2_vits14", {"input_size": 336}
     return "wide_resnet50", {}
 
 
@@ -248,7 +248,7 @@ def backbone_from_config(config: dict | None):
     if name == "dinov2":
         return DINOv2Backbone(
             model_name=config.get("timm_name", DINOV2_MODELS["dinov2_vits14"]),
-            input_size=config.get("input_size", 448),
+            input_size=config.get("input_size", 336),
             layers=tuple(config.get("layers", (-1,))),
             normalize=config.get("normalize", True),
         )

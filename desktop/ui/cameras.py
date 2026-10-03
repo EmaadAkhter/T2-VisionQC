@@ -52,6 +52,7 @@ from desktop.ui.pairing import (
     relay_ws_url,
     save_relay_settings,
 )
+from desktop.ui.multi_camera import RelayPhonesSection
 from desktop.ui.widgets import (
     CollapsibleSection,
     bgr_to_pixmap,
@@ -340,15 +341,25 @@ class CamerasPage(QWidget):
     # --------------------------------------------------------------------- ui
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        root = QVBoxLayout()
         root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
                                 theme.PAGE_MARGIN, theme.PAGE_MARGIN)
         root.setSpacing(theme.SPACE_M)
+        container = QWidget()
+        container.setLayout(root)
+        scroll.setWidget(container)
 
         header = QHBoxLayout()
         header.addWidget(page_header(
             "Cameras",
-            "Add factory cameras, or connect a phone with one QR scan.",
+            "Connect phones with one QR scan, or add factory cameras.",
         ), 1)
         connect = QPushButton("Connect phone")
         connect.setObjectName("Primary")
@@ -358,6 +369,13 @@ class CamerasPage(QWidget):
         add.clicked.connect(self._add_camera)
         header.addWidget(add)
         root.addLayout(header)
+
+        self.phones = RelayPhonesSection(self.auth, self.org, self.status_bar,
+                                         sync_engine=self.sync_engine)
+        phones_section = CollapsibleSection("Phones (relay server)",
+                                            expanded=True)
+        phones_section.body_layout.addWidget(self.phones)
+        root.addWidget(phones_section)
 
         columns = QHBoxLayout()
         columns.setSpacing(14)
@@ -376,6 +394,7 @@ class CamerasPage(QWidget):
 
         root.addLayout(columns, 1)
         root.addWidget(self._build_line_section())
+        root.addStretch(1)
 
     def _build_detail_pane(self) -> QWidget:
         scroll = QScrollArea()
@@ -597,8 +616,8 @@ class CamerasPage(QWidget):
         self.preview_section.set_expanded(not mobile)
         if mobile:
             self.preview_status.setText(
-                "This camera streams through the phone app — watch it on the "
-                "Multi-camera page."
+                "This camera streams through the phone app — watch it in the "
+                "Phones section above."
             )
         else:
             self.preview_status.setText(
@@ -834,8 +853,8 @@ class CamerasPage(QWidget):
             return
         if camera["kind"] == "mobile":
             self.preview_status.setText(
-                "This camera streams through the phone app — watch it on the "
-                "Multi-camera page."
+                "This camera streams through the phone app — watch it in the "
+                "Phones section above."
             )
             return
         self._stop_preview()
@@ -875,6 +894,8 @@ class CamerasPage(QWidget):
 
     def on_leave(self) -> None:
         """Stop all live capture before the page is hidden or destroyed."""
+        if hasattr(self, "phones") and hasattr(self.phones, "on_leave"):
+            self.phones.on_leave()
         self._stop_preview()
         self._stop_line()
 

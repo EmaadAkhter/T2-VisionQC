@@ -1,8 +1,9 @@
-"""Multi-camera dashboard: watch every relayed camera in one grid.
+"""Relay phones section: live tiles for every phone camera.
 
 Connects to the VisionQC relay server, shows each phone / edge camera tile
 with its latest frame and the model assigned to it, and lets the operator
-upload the active local model and assign models per camera.
+upload the active local model and assign models per camera. Embedded inside
+the merged Cameras page as its "Phones" section.
 """
 
 from __future__ import annotations
@@ -41,7 +42,6 @@ from desktop.ui.widgets import (
     card,
     caption,
     muted,
-    page_header,
 )
 from desktop.worker import FunctionWorker
 
@@ -109,7 +109,7 @@ class CameraTile(QFrame):
         super().mousePressEvent(event)
 
 
-class MultiCameraPage(QWidget):
+class RelayPhonesSection(QWidget):
     def __init__(self, auth: AuthService, org: OrgContext, status_bar,
                  sync_engine=None):
         super().__init__()
@@ -134,15 +134,8 @@ class MultiCameraPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(theme.PAGE_MARGIN, theme.PAGE_MARGIN,
-                                theme.PAGE_MARGIN, theme.PAGE_MARGIN)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(theme.SPACE_M)
-
-        root.addWidget(page_header(
-            "Multi-camera",
-            "Phones connect with a QR scan; assign a model per camera. "
-            "Click a tile to select it.",
-        ))
 
         relay_url, relay_token = load_relay_settings()
         connection, connection_layout = card("Relay server")

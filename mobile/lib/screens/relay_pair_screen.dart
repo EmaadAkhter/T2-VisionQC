@@ -23,7 +23,7 @@ class RelayPairScreen extends StatefulWidget {
 
 class _RelayPairScreenState extends State<RelayPairScreen> {
   late final TextEditingController _server = TextEditingController(
-    text: widget.defaultServer ?? 'wss://visionqc.tavesglobal.com',
+    text: widget.defaultServer ?? 'wss://relay.tavesglobal.com',
   );
   final _cameraId = TextEditingController();
   final _apiKey = TextEditingController();
@@ -199,7 +199,7 @@ class _RelayPairScreenState extends State<RelayPairScreen> {
                       autocorrect: false,
                       decoration: const InputDecoration(
                         labelText: 'Server address',
-                        hintText: 'wss://visionqc.tavesglobal.com',
+                        hintText: 'wss://relay.tavesglobal.com',
                         border: OutlineInputBorder(),
                       ),
                     ),
