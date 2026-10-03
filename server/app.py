@@ -112,7 +112,9 @@ def register_camera(name: str) -> dict[str, Any]:
     return {"camera_id": camera_id, "api_key": api_key, "name": name}
 
 
-PAIRING_TTL_S = float(os.environ.get("VISIONQC_PAIRING_TTL", "600"))
+# Pairing must survive the "download/install the app, then scan" flow, so the
+# default has real slack rather than a few minutes between QR and scan.
+PAIRING_TTL_S = float(os.environ.get("VISIONQC_PAIRING_TTL", "3600"))
 
 
 def create_pairing(camera_id: str, ttl_s: float | None = None) -> dict[str, Any]:
@@ -120,6 +122,9 @@ def create_pairing(camera_id: str, ttl_s: float | None = None) -> dict[str, Any]
     token = f"pair_{secrets.token_urlsafe(18)}"
     expires_at = time.time() + (PAIRING_TTL_S if ttl_s is None else ttl_s)
     with _connect() as conn:
+        # Minting is a natural moment to sweep tokens nobody used.
+        conn.execute("DELETE FROM pairing_tokens WHERE expires_at < ?",
+                     (time.time(),))
         conn.execute(
             "INSERT INTO pairing_tokens (token, camera_id, expires_at, created_at) "
             "VALUES (?, ?, ?, ?)",
@@ -128,21 +133,26 @@ def create_pairing(camera_id: str, ttl_s: float | None = None) -> dict[str, Any]
     return {"token": token, "expires_at": expires_at}
 
 
-def claim_pairing(token: str) -> Optional[dict[str, Any]]:
-    """Consume a pairing token and return the camera, or None if unusable."""
+def claim_pairing(token: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Consume a pairing token; returns (camera, None) or (None, reason).
+
+    reason is "expired" for a known-but-stale code and "unknown" otherwise.
+    Expired rows are kept (only swept when new codes are minted) so a retry
+    keeps reporting "expired" instead of degrading to "invalid".
+    """
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM pairing_tokens WHERE token = ?", (token,)
         ).fetchone()
         if row is None:
-            return None
-        conn.execute("DELETE FROM pairing_tokens WHERE token = ?", (token,))
+            return None, "unknown"
         if row["expires_at"] < time.time():
-            return None
+            return None, "expired"
+        conn.execute("DELETE FROM pairing_tokens WHERE token = ?", (token,))
         camera = conn.execute(
             "SELECT * FROM cameras WHERE id = ?", (row["camera_id"],)
         ).fetchone()
-        return dict(camera) if camera else None
+        return (dict(camera), None) if camera else (None, "unknown")
 
 
 def get_camera(camera_id: str) -> Optional[dict[str, Any]]:
@@ -374,10 +384,14 @@ async def pairing_claim(body: dict[str, Any]) -> dict[str, Any]:
     token = str(body.get("token", "")).strip()
     if not token:
         raise HTTPException(status_code=400, detail="Pairing token required")
-    camera = claim_pairing(token)
+    camera, reason = claim_pairing(token)
     if camera is None:
-        raise HTTPException(status_code=404,
-                            detail="Invalid or expired pairing code")
+        if reason == "expired":
+            raise HTTPException(
+                status_code=410,
+                detail="Pairing code expired — ask the desktop for a new code",
+            )
+        raise HTTPException(status_code=404, detail="Invalid pairing code")
     return {
         "camera_id": camera["id"],
         "api_key": camera["api_key"],

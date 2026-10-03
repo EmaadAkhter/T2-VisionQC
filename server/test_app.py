@@ -118,3 +118,30 @@ def test_assigning_unknown_model_fails():
             json={"model_version": "v-does-not-exist"}, headers=HEADERS,
         )
         assert response.status_code == 404
+
+
+def test_pairing_claim_succeeds_once():
+    with TestClient(app) as client:
+        started = client.post("/pairing/start", json={"name": "Phone"},
+                              headers=HEADERS)
+        assert started.status_code == 200
+        token = started.json()["token"]
+        claimed = client.post("/pairing/claim", json={"token": token})
+        assert claimed.status_code == 200
+        assert claimed.json()["api_key"]
+        # Single use: a second claim is rejected as invalid.
+        again = client.post("/pairing/claim", json={"token": token})
+        assert again.status_code == 404
+
+
+def test_expired_pairing_reports_expired_without_consuming():
+    from server.app import create_pairing
+
+    with TestClient(app) as client:
+        camera = _register(client, "Line Pair Expired")
+        pairing = create_pairing(camera["camera_id"], ttl_s=-5)
+        first = client.post("/pairing/claim", json={"token": pairing["token"]})
+        assert first.status_code == 410
+        # The row survives, so a retry still reports "expired" (not "invalid").
+        second = client.post("/pairing/claim", json={"token": pairing["token"]})
+        assert second.status_code == 410

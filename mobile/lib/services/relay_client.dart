@@ -80,8 +80,10 @@ class RelayClient {
       final response = await request.close().timeout(timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode != 200) {
-        throw const RelayException(
-          'Pairing code rejected — ask the desktop for a fresh QR code.',
+        throw RelayException(
+          response.statusCode == 410
+              ? 'Pairing code expired — ask the desktop for a new code.'
+              : 'Pairing code rejected — ask the desktop for a fresh QR code.',
         );
       }
       return jsonDecode(body) as Map<String, dynamic>;
