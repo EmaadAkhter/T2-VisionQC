@@ -3,20 +3,24 @@
 One small service that lets phones run VisionQC cameras and lets the desktop
 app watch every camera in one dashboard. Deployable anywhere Docker runs.
 
-## Public site (single host)
+## Public site and relay (split processes)
 
-The relay serves the public pages on the same hostname as the camera API:
+Two services run side by side behind one Cloudflare tunnel:
 
-| Path | Source | Purpose |
-| --- | --- | --- |
-| `/` | `web/` | Landing page |
-| `/admin/` | `admin-web/dist` | Built React console |
-| `/images/` | `images/` | Screenshots used by the landing page |
+| Service | Port | Hostname | Serves |
+| --- | --- | --- | --- |
+| Site (`server/site.py`) | 8081 | `visionqc.tavesglobal.com` | `/` landing page, `/admin/` console, `/images/`, `/download/<file>` |
+| Relay (`server/app.py`) | 8000 | `relay.tavesglobal.com` | API, camera WebSocket, model upload, `/download/<file>` |
+
+The site runs in its own process, so rebuilding or restarting it never
+interrupts camera streams. Older app builds that still default to the old
+host keep working: the tunnel routes `/ws/...`, `/health`, `/cameras`,
+`/pairing`, `/models` and `/download` on `visionqc.tavesglobal.com` to the
+relay by path rule.
 
 Build the console once with `cd admin-web && npm run build` (or let
-`serve_local.sh` build it when `dist/` is missing). The public endpoint is
-`https://visionqc.tavesglobal.com` — `/` is the landing page and `/admin/`
-the web console, both behind the existing `visionqc` Cloudflare tunnel.
+`serve_local.sh` build it when `dist/` is missing); `server/serve_local.sh`
+starts both services and the tunnel.
 
 ## Run locally
 

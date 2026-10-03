@@ -246,9 +246,9 @@ python3 -m desktop.launcher
 # 5. Run the web admin console (dev server)
 cd admin-web && npm install && npm run dev   # http://localhost:5173
 
-# 5b. Or serve landing page + built console through the relay + tunnel:
+# 5b. Or serve the site + relay through the tunnel (separate processes):
 cd admin-web && npm run build && cd ..
-./server/serve_local.sh   # https://visionqc.tavesglobal.com (/ and /admin/)
+./server/serve_local.sh   # site: https://visionqc.tavesglobal.com · relay: https://relay.tavesglobal.com
 
 # 6. Mobile app (Android build)
 cd mobile && flutter pub get && flutter build apk --debug
